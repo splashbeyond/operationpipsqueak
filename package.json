@@ -1,0 +1,31 @@
+{
+  "name": "piper-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Piper SMS automation API (Airtable + Express)",
+  "main": "api/index.js",
+  "scripts": {
+    "start": "node api/index.js",
+    "dev": "nodemon api/index.js",
+    "dev:all": "concurrently -k -n api,web -c blue,magenta \"npm run dev\" \"npm run dev --prefix frontend\"",
+    "process:once": "node scripts/trigger-processor.js",
+    "webhook:simulate": "node scripts/simulate-webhook.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "airtable": "^0.12.2",
+    "axios": "^1.7.9",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.1",
+    "openai": "^4.77.0",
+    "papaparse": "^5.4.1"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "nodemon": "^3.1.9"
+  }
+}

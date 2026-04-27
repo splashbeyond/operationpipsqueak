@@ -1,0 +1,21 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --color-piper-primary: #c2694a;
+  --color-piper-dark: #8b4433;
+  --color-piper-bg: #fbf0ea;
+  --color-piper-accent: #4a8b7a;
+  --color-piper-text: #1a1a1a;
+  --color-piper-surface: #f5f5f3;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--font-sans);
+}
