@@ -67,6 +67,16 @@ function isAffirmativeReply(text) {
   return false;
 }
 
+/** Case-insensitive compare for Airtable single-select labels. */
+function normStatus(s) {
+  return String(s || '').trim().toLowerCase();
+}
+
+/** True when this log already received a successful payload SMS (spam guard). */
+function isPayloadAlreadySent(logStatus) {
+  return normStatus(logStatus) === normStatus(STATUS.log.payloadSent);
+}
+
 function isInboundMessageEvent(event) {
   const raw = String(event || '').trim();
   if (!raw) return true; // tolerate proxies/curl that omit the event tag
@@ -257,6 +267,9 @@ router.post('/', async (req, res) => {
       reward: customer ? airtable.customerRewardDisplayText(customer.reward) : '',
     };
 
+    const affirmative = isAffirmativeReply(text);
+    const payloadDuplicate = affirmative && isPayloadAlreadySent(cl.status);
+
     /** @type {Promise<unknown>[]} */
     const tasks = [];
     tasks.push(
@@ -304,7 +317,8 @@ router.post('/', async (req, res) => {
     }
 
     // 4. Notify the company owner of any inbound (visibility).
-    if (company.ownerMobile) {
+    // Skip owner ping for repeated YES after payload — avoids SMS spam + cost.
+    if (company.ownerMobile && !payloadDuplicate) {
       const ownerMsg = `Reply from ${from}: ${text}`.slice(0, 1600);
       tasks.push(
         sendSMS({
@@ -316,7 +330,7 @@ router.post('/', async (req, res) => {
     }
 
     // 5. Non-affirmative replies: mark Replied + optional reminder.
-    if (!isAffirmativeReply(text)) {
+    if (!affirmative) {
       tasks.push(
         safeUpdateCampaignLog(cl.id, { [FIELDS.log.status]: STATUS.log.replied })
       );
@@ -340,6 +354,17 @@ router.post('/', async (req, res) => {
     }
 
     // 6. Affirmative reply → send the payload follow-up.
+    //    If the log is already "Payload Sent", do not send again (saves cost; same row = one thread).
+    //    Still OK: status "Replied" after a non-affirmative first message → later YES sends payload.
+    if (isPayloadAlreadySent(cl.status)) {
+      log.info('duplicate YES — payload already sent, skipping follow-up SMS', {
+        logId: cl.id,
+        companyId: cl.companyId,
+      });
+      await Promise.allSettled(tasks);
+      return;
+    }
+
     //    If the company hasn't configured a payload template for this campaign,
     //    fall back to PIPER_DEFAULT_SMS_TEMPLATE so the customer never gets silence.
     let tpl = getPayloadTemplate(company, cl.campaignType, reward);
