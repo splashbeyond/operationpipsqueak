@@ -68,6 +68,7 @@ async function fetchCampaignLogsForCompany(companyId) {
     status: r.get(F.status),
     batchId: r.get(F.batchId),
     snapshotLinks: r.get(F.snapshotLinks),
+    targetHandshake: r.get(F.targetHandshake),
     targetPayload: r.get(F.targetPayload),
     latestReply: r.get(F.latestReply),
     createdAt: r._rawJson?.createdTime || null,

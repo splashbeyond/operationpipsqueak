@@ -5,7 +5,8 @@
  * Everything else has a sane default for the Piper "Universal CSV" base shape:
  *   Customer Data: Name, Phone Number, Campaign Type, Status, Company ID (link), Reward
  *   Campaign Logs: Company ID (link), Phone Number, Campaign Type, Status,
- *                  Latest Reply, Replied At, Handshake Sent At, Snapshot: Links, Target Payload
+ *                  Latest Reply, Replied At, Handshake Sent At, Snapshot: Links,
+ *                  Target Handshake (first SMS), Target Payload (YES-reply SMS)
  *   Company Info: Company ID, Business Name, Blooio API Key & Phone, Handshake Matrix,
  *                 Payload Matrix (Reward), Payload Matrix (No Reward), Inbound Reminder,
  *                 Booking Link, Review Link, Membership Link (or Upsell Link), Owner Mobile,
@@ -71,6 +72,10 @@ const FIELDS = {
       'Handshake Sent At'
     ),
     repliedAt: str(process.env.AIRTABLE_CAMPAIGN_LOG_REPLIED_AT_FIELD, 'Replied At'),
+    targetHandshake: str(
+      process.env.AIRTABLE_CAMPAIGN_LOG_TARGET_HANDSHAKE_FIELD,
+      'Target Handshake'
+    ),
     targetPayload: str(
       process.env.AIRTABLE_CAMPAIGN_LOG_TARGET_PAYLOAD_FIELD,
       'Target Payload'
@@ -130,6 +135,7 @@ const OPTIONS = {
   logOmitBatchId: flag(process.env.AIRTABLE_CAMPAIGN_LOG_OMIT_BATCH_ID),
   logOmitCampaign: flag(process.env.AIRTABLE_CAMPAIGN_LOG_OMIT_CAMPAIGN),
   logOmitTargetPayload: flag(process.env.AIRTABLE_CAMPAIGN_LOG_OMIT_TARGET_PAYLOAD),
+  logOmitTargetHandshake: flag(process.env.AIRTABLE_CAMPAIGN_LOG_OMIT_TARGET_HANDSHAKE),
 
   uploadOmitBatchId: flag(process.env.AIRTABLE_UPLOAD_OMIT_BATCH_ID),
   /** Set if your Uploads table has no "Batch Name" column. */

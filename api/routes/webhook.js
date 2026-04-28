@@ -14,8 +14,8 @@
  *        → send the opt-out confirmation SMS (carrier-required best practice)
  *      Otherwise:
  *        → if affirmative ("yes/y/sure/ok"): send the payload SMS, mark
- *          "Payload Sent" (falls back to PIPER_DEFAULT_SMS_TEMPLATE if the
- *          company forgot to fill in a payload template).
+ *          "Payload Sent", and write the sent body to Target Payload (handshake
+ *          lives in Target Handshake from outbound).
  *        → else: mark "Replied" and (optionally) send the inbound reminder.
  *
  * The handler ACKs Blooio with 200 immediately so retries don't pile up;
@@ -27,7 +27,7 @@ const airtable = require('../services/airtable');
 const { getPayloadTemplate, replacePlaceholders, hasRewardOffer } =
   require('../services/templates');
 const { sendSMS } = require('../services/sms');
-const { FIELDS, STATUS, SERVER } = require('../config');
+const { FIELDS, STATUS, SERVER, OPTIONS } = require('../config');
 const { logger } = require('../log');
 
 const log = logger('webhook');
@@ -399,9 +399,11 @@ router.post('/', async (req, res) => {
         ms: Date.now() - startedMs,
         fallback: usedFallback,
       });
-      tasks.push(
-        safeUpdateCampaignLog(cl.id, { [FIELDS.log.status]: STATUS.log.payloadSent })
-      );
+      const payloadLogFields = { [FIELDS.log.status]: STATUS.log.payloadSent };
+      if (!OPTIONS.logOmitTargetPayload) {
+        payloadLogFields[FIELDS.log.targetPayload] = String(body).trim().slice(0, 100000);
+      }
+      tasks.push(safeUpdateCampaignLog(cl.id, payloadLogFields));
     } catch (e) {
       log.error('payload send failed', {
         err: e instanceof Error ? e.message : String(e),

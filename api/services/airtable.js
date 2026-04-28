@@ -460,7 +460,7 @@ async function checkDNC(phone) {
 
 /**
  * Create a Campaign Logs row. On the first INVALID/UNKNOWN error, retries once
- * after dropping optional fields (Snapshot, Target Payload) — anything else throws.
+ * after dropping optional fields (Snapshot, Target Handshake) — anything else throws.
  *
  * @param {{
  *   companyId: string, phone: string, campaignType: string, status: string,
@@ -503,11 +503,11 @@ async function createCampaignLog(data) {
     fields[F.snapshotLinks] = String(data.snapshotLinks).trim();
   }
   if (
-    !OPTIONS.logOmitTargetPayload &&
+    !OPTIONS.logOmitTargetHandshake &&
     data.messageBody &&
     String(data.messageBody).trim() !== ''
   ) {
-    fields[F.targetPayload] = String(data.messageBody).trim().slice(0, 100000);
+    fields[F.targetHandshake] = String(data.messageBody).trim().slice(0, 100000);
   }
   if (data.handshakeSentAt) {
     fields[F.handshakeSentAt] = String(data.handshakeSentAt).trim();
@@ -577,6 +577,7 @@ async function campaignLogRecordToLog(r) {
     status: r.get(F.status),
     batchId: r.get(F.batchId),
     snapshotLinks: r.get(F.snapshotLinks),
+    targetHandshake: r.get(F.targetHandshake),
     targetPayload: r.get(F.targetPayload),
     latestReply: r.get(F.latestReply),
     companyInfo: companyInfoPreloaded,
