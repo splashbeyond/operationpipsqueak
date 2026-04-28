@@ -14,6 +14,7 @@ const multer = require('multer');
 
 const airtable = require('../services/airtable');
 const { processCSV } = require('../services/csv');
+const { resolveOutboundBody } = require('../services/outbound');
 const { STATUS } = require('../config');
 const { logger } = require('../log');
 
@@ -62,8 +63,37 @@ router.post(
       return res.status(400).json({ error: 'CSV file is required (field name: file)' });
     }
 
+    // Fail before creating rows: any Company ID works as long as Company Info is set up.
+    let step = 'validateCompany';
+    const companyRow = await airtable.getCompanyInfo(companyId);
+    if (!companyRow) {
+      return res.status(400).json({
+        error: `Unknown Company ID "${companyId}". Add a row in the Company Info table whose Company ID field exactly matches "${companyId}", then upload again.`,
+      });
+    }
+    if (!String(companyRow.blooioApiKey || '').trim()) {
+      return res.status(400).json({
+        error: `Company "${companyId}" has no Blooio API key. In Company Info, fill "Blooio API Key & Phone" (API key first), save, then upload again.`,
+      });
+    }
+    try {
+      resolveOutboundBody(
+        {
+          name: ' ',
+          campaignType: defaultCampaignType || 'review',
+          reward: batchReward || undefined,
+        },
+        companyRow
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return res.status(400).json({
+        error: `${msg} (company "${companyId}")`,
+      });
+    }
+
     let uploadRecordId = null;
-    let step = 'createUploadsRow';
+    step = 'createUploadsRow';
     try {
       uploadRecordId = await airtable.createUploadRecord(companyId, batchName, {
         reward: batchReward,

@@ -111,6 +111,7 @@ async function processOneAwaitingCustomer() {
     await airtable.updateCustomerStatus(customer.id, STATUS.customer.failed);
     log.error('handshake send failed', {
       err: err instanceof Error ? err.message : String(err),
+      companyId: customer.companyId,
       to: customer.phone,
     });
     throw err;
