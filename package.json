@@ -12,7 +12,10 @@
     "dev:all": "concurrently -k -n api,web -c blue,magenta \"npm run dev\" \"npm run dev --prefix frontend\"",
     "dev:all:tunnel": "concurrently -k -n api,web -c blue,magenta \"npm run dev:tunnel\" \"npm run dev --prefix frontend\"",
     "process:once": "node scripts/trigger-processor.js",
-    "webhook:simulate": "node scripts/simulate-webhook.js"
+    "webhook:simulate": "node scripts/simulate-webhook.js",
+    "blooio:list": "node scripts/blooio-webhooks.js list",
+    "blooio:setup": "node scripts/blooio-webhooks.js setup",
+    "blooio:cleanup": "node scripts/blooio-webhooks.js cleanup"
   },
   "engines": {
     "node": ">=18"

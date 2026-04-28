@@ -112,6 +112,31 @@ For the outbound worker you have two choices:
 - Simulate inbound for local debugging: `npm run webhook:simulate +15551234567 "yes"`.
 - Logs are JSON-per-line in production, human-friendly in dev.
 
+## Onboarding a new company
+
+Each company has their own Blooio API key, but they all share the same Piper
+inbound webhook URL (set via `WEBHOOK_PUBLIC_URL`).
+
+1. **Add the company in Airtable → Company Info** with their `Company ID`,
+   `Business Name`, `Blooio API Key & Phone`, `Review/Booking/Membership Link`,
+   handshake/payload templates per campaign.
+2. **Register Blooio webhooks** so customer replies land in Piper:
+   ```bash
+   npm run blooio:setup                # registers for every company in Airtable
+   npm run blooio:setup -- --company BUS-2   # just one
+   ```
+3. **Verify** with `npm run blooio:list`. Each company should show exactly one
+   webhook pointing at `https://YOUR-API-HOST/webhook`.
+4. **Clean up legacy webhooks** (e.g. previous Make.com / dev tunnel registrations):
+   ```bash
+   npm run blooio:cleanup              # dry-run: shows what would be deleted
+   npm run blooio:cleanup -- --force   # actually delete
+   ```
+
+That's it. Customer texts YES → Blooio POSTs to Piper → Piper looks up the
+campaign log, resolves which company by linked record, sends the payload using
+that company's Blooio key.
+
 ## Environment variables
 
 The only required vars are `AIRTABLE_API_KEY` and `AIRTABLE_BASE_ID`. Everything else has
