@@ -385,6 +385,31 @@ async function updateCustomerStatus(recordId, status) {
 }
 
 /**
+ * Partial update on Customer Data; drops unknown field names (column missing in base).
+ * @param {string} recordId
+ * @param {Record<string, unknown>} fields
+ */
+async function updateCustomerFields(recordId, fields) {
+  if (!recordId || !fields || !Object.keys(fields).length) return;
+  let payload = { ...fields };
+  for (;;) {
+    try {
+      await getBase()(TABLES.customerData).update([{ id: recordId, fields: payload }]);
+      return;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const m = msg.match(/Unknown field name:\s*"([^"]+)"/i);
+      if (!m) {
+        log.warn('updateCustomerFields failed', { err: msg, recordId });
+        return;
+      }
+      delete payload[m[1]];
+      if (!Object.keys(payload).length) return;
+    }
+  }
+}
+
+/**
  * Latest Customer Data row for a phone (filtered to a specific company).
  * Used by webhook to build the inbound payload (Reward + Name placeholders).
  *
@@ -799,6 +824,7 @@ module.exports = {
   createCustomerRecord,
   getAwaitingCustomers,
   updateCustomerStatus,
+  updateCustomerFields,
   getLatestCustomerForCompanyPhone,
   customerRewardDisplayText,
   // dnc

@@ -104,6 +104,8 @@ async function fetchCustomersForCompany(companyId, status, batchId) {
     campaignType: r.get(CF.campaign),
     status: r.get(CF.status),
     batchId: r.get(CF.batchId),
+    latestCustomerReply: CF.latestCustomerReply ? r.get(CF.latestCustomerReply) : undefined,
+    latestSystemReply: CF.latestSystemReply ? r.get(CF.latestSystemReply) : undefined,
   }));
 }
 

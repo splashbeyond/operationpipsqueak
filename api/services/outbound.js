@@ -10,7 +10,7 @@ const {
   replacePlaceholders,
 } = require('./templates');
 const { sendSMS } = require('./sms');
-const { STATUS, OPTIONS, SERVER } = require('../config');
+const { STATUS, OPTIONS, SERVER, FIELDS } = require('../config');
 const { logger } = require('../log');
 
 const log = logger('outbound');
@@ -100,7 +100,11 @@ async function processOneAwaitingCustomer() {
       }
     }
 
-    await airtable.updateCustomerStatus(customer.id, STATUS.customer.sent);
+    const customerDoneFields = { [FIELDS.customer.status]: STATUS.customer.sent };
+    if (!OPTIONS.customerOmitConversationMirror && FIELDS.customer.latestSystemReply) {
+      customerDoneFields[FIELDS.customer.latestSystemReply] = String(text).trim().slice(0, 100000);
+    }
+    await airtable.updateCustomerFields(customer.id, customerDoneFields);
     log.info('handshake sent', {
       campaign: customer.campaignType,
       to: customer.phone,
@@ -111,7 +115,6 @@ async function processOneAwaitingCustomer() {
     await airtable.updateCustomerStatus(customer.id, STATUS.customer.failed);
     log.error('handshake send failed', {
       err: err instanceof Error ? err.message : String(err),
-      companyId: customer.companyId,
       to: customer.phone,
     });
     throw err;

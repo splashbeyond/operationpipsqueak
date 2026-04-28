@@ -3,7 +3,8 @@
  *
  * Required env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID.
  * Everything else has a sane default for the Piper "Universal CSV" base shape:
- *   Customer Data: Name, Phone Number, Campaign Type, Status, Company ID (link), Reward
+ *   Customer Data: Name, Phone Number, Campaign Type, Status, Company ID (link), Reward,
+ *                  Latest Customer Reply, Latest System Reply (conversation preview for Interfaces)
  *   Campaign Logs: Company ID (link), Phone Number, Campaign Type, Status,
  *                  Latest Reply, Replied At, Handshake Sent At, Snapshot: Links,
  *                  Target Handshake (first SMS), Target Payload (YES-reply SMS)
@@ -52,6 +53,14 @@ const FIELDS = {
     companyId: str(process.env.AIRTABLE_CUSTOMER_COMPANY_ID_FIELD, 'Company ID'),
     batchId: str(process.env.AIRTABLE_CUSTOMER_BATCH_ID_FIELD, 'Batch ID'),
     reward: str(process.env.AIRTABLE_CUSTOMER_REWARD_FIELD, 'Reward'),
+    latestCustomerReply: str(
+      process.env.AIRTABLE_CUSTOMER_LATEST_CUSTOMER_REPLY_FIELD,
+      'Latest Customer Reply'
+    ),
+    latestSystemReply: str(
+      process.env.AIRTABLE_CUSTOMER_LATEST_SYSTEM_REPLY_FIELD,
+      'Latest System Reply'
+    ),
   },
   log: {
     companyId: str(process.env.AIRTABLE_CAMPAIGN_LOG_COMPANY_ID_FIELD, 'Company ID'),
@@ -130,6 +139,8 @@ const OPTIONS = {
   customerOmitReward: flag(process.env.AIRTABLE_CUSTOMER_OMIT_REWARD),
   customerOmitCampaignOnCreate: flag(process.env.AIRTABLE_CUSTOMER_OMIT_CAMPAIGN_ON_CREATE),
   customerOmitProcessingLock: flag(process.env.AIRTABLE_CUSTOMER_OMIT_PROCESSING_LOCK),
+  /** Skip writing Latest Customer Reply / Latest System Reply on Customer Data. */
+  customerOmitConversationMirror: flag(process.env.AIRTABLE_CUSTOMER_OMIT_CONVERSATION_MIRROR),
 
   logCompanyIdIsLink: flag(process.env.AIRTABLE_CAMPAIGN_LOG_COMPANY_ID_IS_LINK),
   logOmitBatchId: flag(process.env.AIRTABLE_CAMPAIGN_LOG_OMIT_BATCH_ID),

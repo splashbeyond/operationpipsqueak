@@ -20,6 +20,9 @@
  *
  * The handler ACKs Blooio with 200 immediately so retries don't pile up;
  * processing happens asynchronously in the background.
+ *
+ * Customer Data "Latest Customer Reply" / "Latest System Reply" mirror the last
+ * inbound line and last SMS sent to the contact (for Airtable Interfaces).
  */
 
 const express = require('express');
@@ -288,6 +291,21 @@ router.post('/', async (req, res) => {
       })
     );
 
+    if (customer?.id && !OPTIONS.customerOmitConversationMirror) {
+      const crField = FIELDS.customer.latestCustomerReply;
+      if (crField) {
+        tasks.push(
+          airtable
+            .updateCustomerFields(customer.id, {
+              [crField]: String(text ?? '').trim().slice(0, 100000),
+            })
+            .catch((e) =>
+              log.warn('customer latest reply mirror failed', { err: e.message || String(e) })
+            )
+        );
+      }
+    }
+
     // 3. TCPA opt-out — must happen before any other reply path.
     if (isOptOutMessage(text)) {
       log.info('opt-out detected', { from, companyId: cl.companyId });
@@ -307,9 +325,21 @@ router.post('/', async (req, res) => {
             to: from,
             text: confirmation,
             idempotencyKey: `piper:optout:${cl.id}:${startedMs}`,
-          }).catch((e) =>
-            log.warn('opt-out confirmation send failed', { err: e.message || String(e) })
-          )
+          })
+            .then(() => {
+              if (
+                customer?.id &&
+                !OPTIONS.customerOmitConversationMirror &&
+                FIELDS.customer.latestSystemReply
+              ) {
+                return airtable.updateCustomerFields(customer.id, {
+                  [FIELDS.customer.latestSystemReply]: confirmation.slice(0, 100000),
+                });
+              }
+            })
+            .catch((e) =>
+              log.warn('opt-out confirmation send failed', { err: e.message || String(e) })
+            )
         );
       }
       await Promise.allSettled(tasks);
@@ -343,9 +373,21 @@ router.post('/', async (req, res) => {
             to: from,
             text: reminder,
             idempotencyKey: `piper:remind:${cl.id}:${startedMs}`,
-          }).catch((e) =>
-            log.warn('inbound reminder send failed', { err: e.message || String(e) })
-          )
+          })
+            .then(() => {
+              if (
+                customer?.id &&
+                !OPTIONS.customerOmitConversationMirror &&
+                FIELDS.customer.latestSystemReply
+              ) {
+                return airtable.updateCustomerFields(customer.id, {
+                  [FIELDS.customer.latestSystemReply]: reminder.slice(0, 100000),
+                });
+              }
+            })
+            .catch((e) =>
+              log.warn('inbound reminder send failed', { err: e.message || String(e) })
+            )
         );
       }
 
@@ -404,6 +446,21 @@ router.post('/', async (req, res) => {
         payloadLogFields[FIELDS.log.targetPayload] = String(body).trim().slice(0, 100000);
       }
       tasks.push(safeUpdateCampaignLog(cl.id, payloadLogFields));
+      if (
+        customer?.id &&
+        !OPTIONS.customerOmitConversationMirror &&
+        FIELDS.customer.latestSystemReply
+      ) {
+        tasks.push(
+          airtable
+            .updateCustomerFields(customer.id, {
+              [FIELDS.customer.latestSystemReply]: String(body).trim().slice(0, 100000),
+            })
+            .catch((e) =>
+              log.warn('customer system reply mirror failed', { err: e.message || String(e) })
+            )
+        );
+      }
     } catch (e) {
       log.error('payload send failed', {
         err: e instanceof Error ? e.message : String(e),
