@@ -1,24 +1,37 @@
+/**
+ * Outbound processor — periodically drains "Awaiting" Customer Data rows.
+ * Started by api/index.js in normal deployments. Disable with DISABLE_INLINE_PROCESSOR=1
+ * if you'd rather drive it via cron POST /process.
+ */
+
 const { processOutboundBatch } = require('../services/outbound');
+const { logger } = require('../log');
+
+const log = logger('processor');
 
 let intervalHandle = /** @type {ReturnType<typeof setInterval> | null} */ (null);
 let running = false;
 
-/**
- * @param {number} intervalSeconds
- */
+async function tick() {
+  if (running) return;
+  running = true;
+  const started = Date.now();
+  try {
+    const out = await processOutboundBatch(25);
+    if (out.processed > 0) log.info('tick', { processed: out.processed, ms: Date.now() - started });
+  } catch (err) {
+    log.error('tick error', { err: err instanceof Error ? err.message : String(err) });
+  } finally {
+    running = false;
+  }
+}
+
+/** @param {number} intervalSeconds */
 function startProcessor(intervalSeconds = 60) {
   if (intervalHandle) return;
-
   const ms = Math.max(Number(intervalSeconds) || 60, 5) * 1000;
-
-  intervalHandle = setInterval(() => {
-    void tick();
-  }, ms);
-
-  if (typeof intervalHandle.unref === 'function') {
-    intervalHandle.unref();
-  }
-
+  intervalHandle = setInterval(() => void tick(), ms);
+  if (typeof intervalHandle.unref === 'function') intervalHandle.unref();
   void tick();
 }
 
@@ -29,25 +42,4 @@ function stopProcessor() {
   }
 }
 
-async function tick() {
-  if (running) return;
-  running = true;
-  const started = Date.now();
-  try {
-    await processOutboundBatch(25);
-  } catch (err) {
-    console.error('[processor]', new Date().toISOString(), err.message || err);
-  } finally {
-    const ms = Date.now() - started;
-    console.log(`[processor] tick done in ${ms}ms`);
-    running = false;
-  }
-}
-
-module.exports = {
-  startProcessor,
-  stopProcessor,
-  tick,
-  /** @internal */
-  _isRunning: () => running,
-};
+module.exports = { startProcessor, stopProcessor, tick, _isRunning: () => running };

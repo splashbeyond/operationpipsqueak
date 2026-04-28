@@ -1,3 +1,15 @@
+/**
+ * Piper API entry point.
+ *
+ * Endpoints:
+ *   GET  /            — service banner
+ *   GET  /health      — liveness probe (returns 200)
+ *   POST /upload      — CSV upload (multipart "file" + companyId, optional batchName/campaignType/reward)
+ *   POST /webhook     — Blooio inbound (message.received)
+ *   GET  /campaigns/* — dashboard read APIs
+ *   POST /process     — manually run an outbound batch (needs PROCESSOR_SECRET)
+ */
+
 require('./env');
 
 const express = require('express');
@@ -7,17 +19,22 @@ const uploadRouter = require('./routes/upload');
 const webhookRouter = require('./routes/webhook');
 const campaignsRouter = require('./routes/campaigns');
 const processRouter = require('./routes/process');
-const { startProcessor } = require('./jobs/processor');
+const { startProcessor, stopProcessor } = require('./jobs/processor');
+const { SERVER, assertCoreEnv } = require('./config');
+const { logger } = require('./log');
+
+const log = logger('piper');
 
 const app = express();
+app.disable('x-powered-by');
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: false, limit: '2mb' }));
 
 app.get('/', (_req, res) =>
   res.json({
     name: 'Piper API',
     ok: true,
-    hint: 'This is the JSON backend only. Use the Vite app (e.g. http://localhost:5173) for the dashboard.',
     endpoints: {
       health: 'GET /health',
       upload: 'POST /upload',
@@ -29,24 +46,89 @@ app.get('/', (_req, res) =>
   })
 );
 
-app.get('/health', (_req, res) => res.json({ ok: true }));
+app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
 
 app.use('/upload', uploadRouter);
 app.use('/webhook', webhookRouter);
 app.use('/campaigns', campaignsRouter);
 app.use('/process', processRouter);
 
-const PORT = Number(process.env.PORT) || 3000;
+app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
+
+// Last-resort error handler — keeps the process alive instead of crashing on unexpected errors.
+// eslint-disable-next-line no-unused-vars
+app.use((err, _req, res, _next) => {
+  log.error('unhandled', { err: err instanceof Error ? err.message : String(err) });
+  if (res.headersSent) return;
+  res.status(500).json({ error: 'Internal error' });
+});
 
 if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log(`Piper API listening on ${PORT}`);
-    if (process.env.VERCEL !== '1' && process.env.DISABLE_INLINE_PROCESSOR !== '1') {
-      const intervalSec = Math.max(5, Number(process.env.PROCESSOR_INTERVAL_SECONDS) || 60);
-      startProcessor(intervalSec);
-      console.log(`Outbound processor started (every ${intervalSec}s)`);
+  try {
+    assertCoreEnv();
+  } catch (err) {
+    log.error('boot failed', { err: err instanceof Error ? err.message : String(err) });
+    process.exit(1);
+  }
+
+  const server = app.listen(SERVER.port, async () => {
+    log.info('listening', { port: SERVER.port, env: process.env.NODE_ENV || 'development' });
+
+    if (SERVER.webhookPublicUrl) {
+      const base = SERVER.webhookPublicUrl.replace(/\/$/, '');
+      log.info('expected webhook URL', { url: `${base}/webhook` });
+    } else if (!SERVER.isProduction) {
+      log.info(
+        'inbound webhook hint: deploy + set Blooio to https://<host>/webhook, or run npm run dev:tunnel for ngrok'
+      );
+    }
+
+    if (SERVER.enableDevTunnel && !SERVER.isProduction) {
+      try {
+        const { startDevTunnel } = require('./dev-tunnel');
+        await startDevTunnel(SERVER.port);
+      } catch (e) {
+        log.error('dev tunnel failed (run npm install for ngrok/localtunnel)', {
+          err: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+
+    if (!SERVER.disableInlineProcessor) {
+      startProcessor(SERVER.processorIntervalSec);
+      log.info('outbound processor started', { intervalSec: SERVER.processorIntervalSec });
     }
   });
+
+  // Process-level safety nets — log and continue rather than die on a stray exception.
+  process.on('unhandledRejection', (reason) => {
+    log.error('unhandledRejection', {
+      err: reason instanceof Error ? reason.message : String(reason),
+    });
+  });
+  process.on('uncaughtException', (err) => {
+    log.error('uncaughtException', { err: err.message, stack: err.stack });
+  });
+
+  let shuttingDown = false;
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log.info('shutdown', { signal });
+    stopProcessor();
+    void (async () => {
+      try {
+        const { closeDevTunnel } = require('./dev-tunnel');
+        await closeDevTunnel();
+      } catch {
+        /* noop */
+      }
+      server.close(() => process.exit(0));
+      setTimeout(() => process.exit(0), 5000).unref();
+    })();
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
 module.exports = app;

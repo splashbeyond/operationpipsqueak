@@ -1,0 +1,78 @@
+# Render.com blueprint for Piper.
+# Two services: a Node web service for the API and a static site for the dashboard.
+# Free plan friendly. No Docker required.
+
+services:
+  - type: web
+    name: piper-api
+    runtime: node
+    plan: starter
+    region: oregon
+    rootDir: .
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: AIRTABLE_API_KEY
+        sync: false
+      - key: AIRTABLE_BASE_ID
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: PROCESSOR_SECRET
+        generateValue: true
+      - key: BLOOIO_BASE_URL
+        value: https://backend.blooio.com/v2/api
+      # Schema overrides for the Piper "Universal CSV" base. Adjust if yours differs.
+      - key: AIRTABLE_CUSTOMER_PHONE_FIELD
+        value: Phone Number
+      - key: AIRTABLE_CUSTOMER_OMIT_BATCH_ID
+        value: "1"
+      - key: AIRTABLE_CUSTOMER_COMPANY_ID_IS_LINK
+        value: "1"
+      - key: AIRTABLE_CAMPAIGN_LOG_COMPANY_ID_IS_LINK
+        value: "1"
+      - key: AIRTABLE_CAMPAIGN_LOG_PHONE_FIELD
+        value: Phone Number
+      - key: AIRTABLE_CAMPAIGN_LOG_OMIT_BATCH_ID
+        value: "1"
+      - key: AIRTABLE_OUTBOUND_CAMPAIGN_LOG_STATUS
+        value: Handshake Sent
+      - key: AIRTABLE_WEBHOOK_CAMPAIGN_LOG_STATUS_REPLIED
+        value: Needs Human Review
+      - key: AIRTABLE_WEBHOOK_CAMPAIGN_LOG_STATUS_PAYLOAD_SENT
+        value: Completed
+      - key: PIPER_STATS_CAMPAIGN_LOG_SENT
+        value: Handshake Sent
+      - key: PIPER_STATS_CAMPAIGN_LOG_REPLIED
+        value: Needs Human Review,Completed
+      - key: PIPER_STATS_CAMPAIGN_LOG_FAILED
+        value: Failed/Opt-Out
+      - key: AIRTABLE_CUSTOMER_STATUS_PROCESSING
+        value: Ready
+      - key: AIRTABLE_CUSTOMER_STATUS_FAILED
+        value: Error
+      - key: AIRTABLE_SKIP_UPLOAD_ATTACHMENT
+        value: "1"
+      - key: AIRTABLE_UPLOAD_OMIT_BATCH_ID
+        value: "1"
+
+  - type: web
+    name: piper-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    autoDeploy: true
+    envVars:
+      - key: VITE_API_URL
+        sync: false # set to your piper-api service URL after first deploy
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

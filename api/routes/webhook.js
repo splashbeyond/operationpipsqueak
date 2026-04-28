@@ -1,95 +1,122 @@
+/**
+ * Inbound webhook from Blooio.
+ *
+ * Flow when a customer texts back:
+ *   1. Find the Campaign Logs row for this phone (last 10 digits FIND fallback).
+ *   2. Mark "Replied At" + "Latest Reply".
+ *   3. If the body is affirmative ("yes/y/sure/ok") → send the payload SMS,
+ *      mark status "Payload Sent".
+ *      Else → mark "Replied" and (optionally) send the inbound reminder.
+ *
+ * Production note: Blooio cannot reach http://localhost. The webhook URL must
+ * be a public HTTPS endpoint (deployed API or ngrok). This file does not assume
+ * any tunneling; it only requires the request to actually arrive.
+ */
+
 const express = require('express');
-
 const airtable = require('../services/airtable');
-const { getPayloadTemplate, replacePlaceholders } = require('../services/templates');
+const { getPayloadTemplate, replacePlaceholders, hasRewardOffer } =
+  require('../services/templates');
 const { sendSMS } = require('../services/sms');
+const { FIELDS, STATUS, SERVER } = require('../config');
+const { logger } = require('../log');
 
+const log = logger('webhook');
 const router = express.Router();
 
-/**
- * Customer replied with an affirmative (handshake asked them to text Yes).
- * @param {string} text
- */
+router.get('/', (_req, res) =>
+  res.json({
+    ok: true,
+    info: 'POST Blooio message.received JSON here.',
+    note: 'Must be reached over public HTTPS (deployed URL or ngrok).',
+  })
+);
+
+/* ───────────────────────── parsing ───────────────────────── */
+
 function isAffirmativeReply(text) {
   const raw = String(text || '').trim().toLowerCase();
   if (!raw) return false;
   const t = raw.replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
   if (t === 'y' || /^yes\b/.test(t) || t === 'yeah' || t === 'yep' || t === 'yup') return true;
-  if (/\byes\b/.test(t) || /\bsure\b/.test(t) || /\bok\b/.test(t) || /\bokay\b/.test(t)) return true;
+  if (/\byes\b/.test(t) || /\bsure\b/.test(t) || /\bok\b/.test(t) || /\bokay\b/.test(t))
+    return true;
   return false;
 }
 
-/**
- * Customer Data "Reward" may be checkbox, single select, or text.
- * @param {unknown} raw
- */
-function rewardIsTruthy(raw) {
-  if (raw === true) return true;
-  if (raw === false || raw === null || raw === undefined) return false;
-  const s = String(raw).trim().toLowerCase();
-  if (!s) return false;
-  if (['no', 'n', 'false', '0', 'none', 'no reward', 'without reward', 'n/a', 'na'].includes(s))
-    return false;
-  if (['yes', 'y', 'true', '1', 'reward', 'rewards'].includes(s)) return true;
-  if (s.includes('no reward') || s.includes('without reward')) return false;
-  // Free-text incentive (e.g. "$10 gift card") counts as reward offer
-  return true;
+function isInboundMessageEvent(event) {
+  const raw = String(event || '').trim();
+  if (!raw) return true; // tolerate proxies/curl that omit the event tag
+  const n = raw.toLowerCase().replace(/[\s._-]/g, '');
+  return n === 'messagereceived';
+}
+
+function pickFirst(layers, keys) {
+  for (const L of layers) {
+    if (!L || typeof L !== 'object') continue;
+    for (const k of keys) {
+      const v = L[k];
+      if (v !== undefined && v !== null && String(v).trim() !== '') return String(v).trim();
+    }
+  }
+  return '';
 }
 
 /**
- * Blooio `message.received` shape + legacy/generic fallbacks.
- * @see https://docs.blooio.com/api-reference/webhook-events
+ * Pull the inbound shape out of any of the body / data / payload / message / object envelopes
+ * that Blooio (and various proxies) may use.
  */
 function parseInboundMessage(req) {
   const root = req.body && typeof req.body === 'object' ? req.body : {};
-  const body = root.data && typeof root.data === 'object' ? root.data : root;
+  const layers = [root, root.data, root.payload, root.message, root.object].filter(
+    (x) => x && typeof x === 'object'
+  );
 
-  const event = body.event || root.event;
-  if (event && event !== 'message.received') {
-    return { type: 'skip', event: String(event) };
+  const headerEvent = String(req.headers['x-blooio-event'] || '').trim();
+  const bodyEvent = pickFirst(layers, ['event']);
+  const event = bodyEvent || headerEvent;
+
+  if (!isInboundMessageEvent(event)) {
+    return { type: 'skip', event: event || 'unknown' };
   }
 
-  const text = body.text ?? body.body ?? body.Body ?? root.text ?? '';
-  const rawTs = body.received_at ?? body.timestamp ?? root.received_at ?? root.timestamp ?? null;
-  const from =
-    body.sender ||
-    body.external_id ||
-    body.from ||
-    body.From ||
-    body.phone ||
-    root.sender ||
-    root.external_id ||
-    '';
+  const text = pickFirst(layers, ['text', 'body', 'Body', 'content']);
+  const from = pickFirst(layers, [
+    'sender',
+    'external_id',
+    'chat_id',
+    'from',
+    'From',
+    'phone',
+    'identifier',
+  ]);
+  const rawTs = pickFirst(layers, ['received_at', 'timestamp', 'sent_at']);
 
   let repliedAt = null;
-  if (rawTs !== null && rawTs !== undefined && String(rawTs).trim() !== '') {
+  if (rawTs) {
     const n = Number(rawTs);
-    if (Number.isFinite(n) && n > 0) {
-      repliedAt = new Date(n).toISOString();
-    } else {
-      const d = new Date(String(rawTs));
+    if (Number.isFinite(n) && n > 0) repliedAt = new Date(n).toISOString();
+    else {
+      const d = new Date(rawTs);
       if (!Number.isNaN(d.getTime())) repliedAt = d.toISOString();
     }
   }
 
-  if (!from && !text && Object.keys(root).length === 0) {
+  if (!from && !text && !Object.keys(root).length) {
     return { type: 'skip', event: 'empty' };
   }
-
   return {
     type: 'inbound',
-    from: from ? String(from) : '',
-    text: text ? String(text) : '',
+    from,
+    text,
     repliedAt,
-    event: event ? String(event) : 'message.received',
+    event: event || headerEvent || 'message.received',
   };
 }
 
 /**
- * Update Campaign Logs but tolerate missing optional columns in Airtable.
- * Retries by removing unknown fields rather than aborting inbound automation.
- * @param {string} recordId
- * @param {Record<string, unknown>} fields
+ * Update Campaign Logs but tolerate columns that don't exist in the user's base.
+ * Drops unknown fields and retries instead of aborting the inbound flow.
  */
 async function safeUpdateCampaignLog(recordId, fields) {
   const payload = { ...fields };
@@ -109,56 +136,81 @@ async function safeUpdateCampaignLog(recordId, fields) {
   }
 }
 
-router.post('/', async (req, res) => {
-  const parsed = parseInboundMessage(req);
-  const ts = new Date().toISOString();
-  const startedMs = Date.now();
+/* ───────────────────────── handler ───────────────────────── */
 
+router.post('/', async (req, res) => {
+  const startedMs = Date.now();
+  log.info('POST received');
+
+  if (SERVER.webhookLogBody) {
+    try {
+      log.info('body', { body: JSON.stringify(req.body).slice(0, 4000) });
+    } catch {
+      log.info('body', { body: '(unserializable)' });
+    }
+  }
+
+  const parsed = parseInboundMessage(req);
   if (parsed.type === 'skip') {
+    log.info('skip non-inbound event', { event: parsed.event });
     return res.status(200).json({ ok: true, ignored: parsed.event });
   }
 
   const { from, text, event, repliedAt } = parsed;
 
+  // Always answer fast (200) so Blooio doesn't retry. Heavy work runs after the response.
+  res.status(200).json({ ok: true });
+
   try {
     if (!from) {
-      console.warn(`[webhook] ${ts} unknown sender (no phone)`, JSON.stringify(req.body).slice(0, 500));
-      return res.status(200).json({ ok: true });
+      log.warn('inbound has no sender', { bodyHead: JSON.stringify(req.body).slice(0, 300) });
+      return;
     }
+    log.info('inbound', { from, event, textPreview: String(text).slice(0, 64) });
 
-    console.log(`[webhook] ${ts} inbound from=${from} event=${event}`);
-
-    const log = await airtable.getCampaignLogByPhone(from);
-    if (!log) {
-      console.warn(`[webhook] ${ts} unknown sender phone=${from}`);
-      return res.status(200).json({ ok: true });
+    const cl = await airtable.getCampaignLogByPhone(from);
+    if (!cl) {
+      log.warn('no Campaign Logs match for sender', {
+        from,
+        hint:
+          'check that Blooio webhook URL hits this API and that Campaign Logs stores the same phone (e.g. +1XXXXXXXXXX)',
+      });
+      return;
     }
+    log.info('campaign log matched', { logId: cl.id, companyId: cl.companyId });
 
-    const companyPromise = airtable.getCompanyInfo(log.companyId);
-    const customerPromise = airtable.getLatestCustomerForCompanyPhone(log.companyId, from);
-    const company = await companyPromise;
+    const company = cl.companyInfo || (await airtable.getCompanyInfo(cl.companyId));
     if (!company || !company.blooioApiKey) {
-      console.error(`[webhook] ${ts} missing company or API key for ${log.companyId}`);
-      return res.status(200).json({ ok: true });
+      log.error('no company / blooio key', { companyId: cl.companyId });
+      return;
     }
 
-    const customer = await customerPromise;
-    const hasReward = customer ? rewardIsTruthy(customer.reward) : false;
-    const customerName = customer && customer.name != null ? String(customer.name).trim() : '';
-    const rewardText = customer ? airtable.customerRewardDisplayText(customer.reward) : '';
+    const customer = await airtable.getLatestCustomerForCompanyPhone(
+      cl.companyId,
+      from,
+      company
+    );
+    const reward = customer ? hasRewardOffer(customer.reward) : false;
+    const placeholders = {
+      name: customer && customer.name != null ? String(customer.name).trim() : '',
+      businessName: company.businessName || '',
+      reviewLink: company.reviewLink || '',
+      bookingLink: company.bookingLink || '',
+      membershipLink: company.membershipLink || '',
+      reward: customer ? airtable.customerRewardDisplayText(customer.reward) : '',
+    };
 
-    const logFields = airtable.campaignLogFields();
     /** @type {Promise<unknown>[]} */
-    const deferred = [];
-    deferred.push(
-      safeUpdateCampaignLog(log.id, {
-        [logFields.latestReply]: text,
-        [logFields.repliedAt]: repliedAt || ts,
+    const tasks = [];
+    tasks.push(
+      safeUpdateCampaignLog(cl.id, {
+        [FIELDS.log.latestReply]: text,
+        [FIELDS.log.repliedAt]: repliedAt || new Date().toISOString(),
       })
     );
-    deferred.push(
+    tasks.push(
       airtable.createMessageHistoryEntry({
-        companyId: log.companyId,
+        companyId: cl.companyId,
         phone: from,
         direction: 'Inbound',
         body: text,
@@ -166,135 +218,80 @@ router.post('/', async (req, res) => {
       })
     );
 
-    const placeholderCtx = {
-      name: customerName,
-      businessName: company.businessName || '',
-      reviewLink: company.reviewLink || '',
-      bookingLink: company.bookingLink || '',
-      membershipLink: company.membershipLink || '',
-      reward: rewardText,
-    };
-
     if (company.ownerMobile) {
       const ownerMsg = `Reply from ${from}: ${text}`.slice(0, 1600);
-      deferred.push(
-        (async () => {
-          try {
-            await sendSMS({
-              apiKey: company.blooioApiKey,
-              to: String(company.ownerMobile),
-              text: ownerMsg,
-            });
-            await airtable.createMessageHistoryEntry({
-              companyId: log.companyId,
-              phone: String(company.ownerMobile),
-              direction: 'Outbound',
-              body: ownerMsg,
-              eventType: 'owner_notify',
-            });
-          } catch (e) {
-            console.error('[webhook] owner notify failed', e.message || e);
-          }
-        })()
+      tasks.push(
+        sendSMS({
+          apiKey: company.blooioApiKey,
+          to: String(company.ownerMobile),
+          text: ownerMsg,
+        }).catch((e) => log.warn('owner notify failed', { err: e.message || String(e) }))
       );
     }
 
     if (!isAffirmativeReply(text)) {
-      deferred.push(
-        safeUpdateCampaignLog(log.id, {
-          [logFields.status]:
-            process.env.AIRTABLE_WEBHOOK_CAMPAIGN_LOG_STATUS_REPLIED || 'Replied',
-        })
+      tasks.push(
+        safeUpdateCampaignLog(cl.id, { [FIELDS.log.status]: STATUS.log.replied })
       );
 
-      const reminder = String(company.inboundReminderTemplate || '').trim();
+      const reminder = replacePlaceholders(company.inboundReminderTemplate, placeholders).trim();
       if (reminder) {
-        const reminderBody = replacePlaceholders(reminder, placeholderCtx);
-        if (reminderBody.trim()) {
-          deferred.push(
-            (async () => {
-              try {
-                await sendSMS({
-                  apiKey: company.blooioApiKey,
-                  to: from,
-                  text: reminderBody,
-                  idempotencyKey: `piper:remind:${log.id}:${ts}`,
-                });
-                await airtable.createMessageHistoryEntry({
-                  companyId: log.companyId,
-                  phone: from,
-                  direction: 'Outbound',
-                  body: reminderBody,
-                  eventType: 'inbound_reminder',
-                });
-              } catch (e) {
-                console.error('[webhook] inbound reminder send failed', e.message || e);
-              }
-            })()
-          );
-        }
+        tasks.push(
+          sendSMS({
+            apiKey: company.blooioApiKey,
+            to: from,
+            text: reminder,
+            idempotencyKey: `piper:remind:${cl.id}:${startedMs}`,
+          }).catch((e) =>
+            log.warn('inbound reminder send failed', { err: e.message || String(e) })
+          )
+        );
       }
 
-      void Promise.allSettled(deferred);
-      return res.status(200).json({ ok: true });
+      await Promise.allSettled(tasks);
+      return;
     }
 
-    const followTemplate = getPayloadTemplate(company, log.campaignType, hasReward);
-    const followBody = replacePlaceholders(followTemplate, placeholderCtx);
-
-    if (!followBody.trim()) {
-      console.warn(
-        `[webhook] ${ts} affirmative reply but no payload template (fill Payload Matrix (Reward)/(No Reward) or Payload Matrix) company=${log.companyId}`
+    // Affirmative reply → send the payload follow-up.
+    const tpl = getPayloadTemplate(company, cl.campaignType, reward);
+    const body = replacePlaceholders(tpl, placeholders).trim();
+    if (!body) {
+      log.warn('YES with empty payload template', {
+        companyId: cl.companyId,
+        campaign: cl.campaignType,
+        reward,
+      });
+      tasks.push(
+        safeUpdateCampaignLog(cl.id, { [FIELDS.log.status]: STATUS.log.replied })
       );
-      deferred.push(
-        safeUpdateCampaignLog(log.id, {
-          [logFields.status]:
-            process.env.AIRTABLE_WEBHOOK_CAMPAIGN_LOG_STATUS_REPLIED || 'Replied',
-        })
-      );
-      void Promise.allSettled(deferred);
-      return res.status(200).json({ ok: true });
+      await Promise.allSettled(tasks);
+      return;
     }
 
     try {
       await sendSMS({
         apiKey: company.blooioApiKey,
         to: from,
-        text: followBody,
-        idempotencyKey: `piper:follow:${log.id}:${ts}`,
+        text: body,
+        idempotencyKey: `piper:follow:${cl.id}:${startedMs}`,
       });
-      console.log(`[webhook] YES payload sent in ${Date.now() - startedMs}ms to=${from}`);
-
-      deferred.push(
-        airtable.createMessageHistoryEntry({
-          companyId: log.companyId,
-          phone: from,
-          direction: 'Outbound',
-          body: followBody,
-          eventType: 'payload_followup',
-        })
-      );
-      deferred.push(
-        safeUpdateCampaignLog(log.id, {
-          [logFields.status]:
-            process.env.AIRTABLE_WEBHOOK_CAMPAIGN_LOG_STATUS_PAYLOAD_SENT || 'Payload Sent',
-        })
+      log.info('payload sent', { to: from, ms: Date.now() - startedMs });
+      tasks.push(
+        safeUpdateCampaignLog(cl.id, { [FIELDS.log.status]: STATUS.log.payloadSent })
       );
     } catch (e) {
-      console.error('[webhook] payload follow-up send failed', e.message || e);
-      deferred.push(
-        safeUpdateCampaignLog(log.id, {
-          [logFields.status]:
-            process.env.AIRTABLE_WEBHOOK_CAMPAIGN_LOG_STATUS_REPLIED || 'Replied',
-        })
+      log.error('payload send failed', {
+        err: e instanceof Error ? e.message : String(e),
+        to: from,
+      });
+      tasks.push(
+        safeUpdateCampaignLog(cl.id, { [FIELDS.log.status]: STATUS.log.replied })
       );
     }
 
-    void Promise.allSettled(deferred);
-    return res.status(200).json({ ok: true });
+    await Promise.allSettled(tasks);
   } catch (err) {
-    console.error('[webhook]', err);
-    return res.status(200).json({ ok: true });
+    log.error('handler error', { err: err instanceof Error ? err.message : String(err) });
   }
 });
 
