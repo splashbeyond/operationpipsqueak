@@ -1,0 +1,16 @@
+{
+  "watch": ["api"],
+  "ext": "js,json,cjs,mjs",
+  "ignore": [
+    "**/*.test.js",
+    "frontend/**",
+    "scripts/**",
+    "node_modules/**",
+    "**/.env",
+    "**/.env.*",
+    "**/*.md",
+    "**/dist/**",
+    ".git/**"
+  ],
+  "delay": "500"
+}

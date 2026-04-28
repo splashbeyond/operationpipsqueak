@@ -1,108 +1,116 @@
 /**
- * HTTPS tunnel so Blooio can POST webhooks to a dev machine.
- * Enable with ENABLE_DEV_TUNNEL=1 — devDependencies only; never enable in production.
+ * Dev-only HTTPS tunnel so Blooio can POST webhooks to your laptop.
+ * Enabled with ENABLE_DEV_TUNNEL=1. Never enable in production.
  *
- * Prefer NGROK_AUTHTOKEN (ngrok) — works with third-party webhooks.
- * localtunnel (*.loca.lt) often fails for inbound SMS/webhook providers.
+ * Use ngrok. Set NGROK_AUTHTOKEN, optionally NGROK_DOMAIN for a stable URL.
+ * If NGROK_AUTHTOKEN is missing, the API still runs but inbound webhooks
+ * cannot be received — we print loud instructions instead of pretending to work.
+ *
+ * To get a stable URL that survives restarts (free):
+ *   1. Sign up: https://dashboard.ngrok.com/signup
+ *   2. Token:   https://dashboard.ngrok.com/get-started/your-authtoken  → NGROK_AUTHTOKEN
+ *   3. Domain:  https://dashboard.ngrok.com/cloud-edge/domains          → NGROK_DOMAIN
+ *      (free tier includes one reserved domain like "piper-davis.ngrok-free.app")
  */
 
-let tunnelRef = null;
 /** @type {{ close: () => Promise<void>; url: () => string } | null} */
 let ngrokListener = null;
 
-function printWebhookBanner(webhookUrl) {
-  console.log('\n');
-  console.log('══════════════════════════════════════════════════════════════');
-  console.log('  BLOOIO → Webhooks: set Inbound URL to (message.received):');
-  console.log('');
-  console.log(`  ${webhookUrl}`);
-  console.log('');
-  console.log('  Copy exactly, save in Blooio, then text YES again.');
-  console.log('  Production: use your deployed https://your-domain/webhook (no tunnel).');
-  console.log('══════════════════════════════════════════════════════════════\n');
+function box(lines) {
+  const max = Math.max(...lines.map((l) => l.length));
+  const bar = '═'.repeat(max + 4);
+  console.log('\n' + bar);
+  for (const l of lines) console.log(`  ${l.padEnd(max, ' ')}`);
+  console.log(bar + '\n');
+}
+
+function printWebhookBanner(webhookUrl, isStable) {
+  box([
+    'Blooio → Webhooks → Inbound URL (message.received):',
+    '',
+    webhookUrl,
+    '',
+    isStable
+      ? 'Stable domain. Paste once, leave it alone.'
+      : 'EPHEMERAL: this URL changes on restart. Set NGROK_DOMAIN for a stable one.',
+  ]);
+}
+
+function printNoTokenBanner() {
+  box([
+    'Inbound webhooks are NOT receivable yet.',
+    '',
+    'Set NGROK_AUTHTOKEN in .env (free):',
+    '  https://dashboard.ngrok.com/get-started/your-authtoken',
+    '',
+    'Then optional, recommended:',
+    '  NGROK_DOMAIN=<your>.ngrok-free.app  (one free reserved domain)',
+    '',
+    'Or deploy (render.yaml) and skip tunnels entirely.',
+  ]);
 }
 
 /**
  * @param {number} port
- * @returns {Promise<string>} Public base URL (no trailing slash)
+ * @returns {Promise<string|null>} Public base URL (no trailing slash), or null if not started.
  */
 async function startDevTunnel(port) {
-  const token = process.env.NGROK_AUTHTOKEN;
-  if (token != null && String(token).trim() !== '') {
-    let ngrok;
-    try {
-      ngrok = require('@ngrok/ngrok');
-    } catch {
-      throw new Error('@ngrok/ngrok is missing. From the repo root run: npm install');
-    }
-    const listener = await ngrok.forward({
-      addr: port,
-      authtoken: String(token).trim(),
-    });
-    ngrokListener = listener;
-    const base = listener.url().replace(/\/$/, '');
-    printWebhookBanner(`${base}/webhook`);
-    console.log('[piper] Using ngrok (NGROK_AUTHTOKEN set) — reliable for Blooio webhooks.\n');
-    return base;
+  const token = String(process.env.NGROK_AUTHTOKEN || '').trim();
+  const domain = String(process.env.NGROK_DOMAIN || '').trim();
+
+  if (!token) {
+    printNoTokenBanner();
+    return null;
   }
 
-  console.warn(
-    '[piper] NGROK_AUTHTOKEN is not set — falling back to localtunnel (*.loca.lt).\n' +
-      '      Many providers never reach loca.lt (or hit an interstitial). For inbound SMS:\n' +
-      '      1) Sign up at https://dashboard.ngrok.com/signup\n' +
-      '      2) Copy your authtoken from https://dashboard.ngrok.com/get-started/your-authtoken\n' +
-      '      3) Add to .env: NGROK_AUTHTOKEN=...  then restart npm run dev:tunnel\n'
-  );
-
-  let localtunnel;
+  let ngrok;
   try {
-    localtunnel = require('localtunnel');
+    ngrok = require('@ngrok/ngrok');
   } catch {
-    throw new Error('localtunnel is missing. From the repo root run: npm install');
+    throw new Error('@ngrok/ngrok missing. Run: npm install');
   }
 
-  const subdomain = process.env.DEV_TUNNEL_SUBDOMAIN;
-  const tunnel = await localtunnel({
-    port,
-    ...(subdomain && String(subdomain).trim() ? { subdomain: String(subdomain).trim() } : {}),
-  });
+  /** @type {{ addr: number, authtoken: string, domain?: string }} */
+  const opts = { addr: port, authtoken: token };
+  if (domain) opts.domain = domain;
 
-  tunnelRef = tunnel;
-  tunnel.on('error', (err) => {
-    console.error('[piper] dev tunnel error:', err.message || err);
-  });
+  let listener;
+  try {
+    listener = await ngrok.forward(opts);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (domain && /domain|reserved|not allowed/i.test(msg)) {
+      console.warn(
+        `[piper] ngrok domain "${domain}" rejected (${msg}). Falling back to ephemeral URL. ` +
+          'Reserve a free domain at https://dashboard.ngrok.com/cloud-edge/domains.'
+      );
+      delete opts.domain;
+      listener = await ngrok.forward(opts);
+    } else {
+      throw err;
+    }
+  }
 
-  const base = tunnel.url.replace(/\/$/, '');
-  printWebhookBanner(`${base}/webhook`);
+  ngrokListener = listener;
+  const base = listener.url().replace(/\/$/, '');
+  printWebhookBanner(`${base}/webhook`, Boolean(domain) && base.includes(domain));
   return base;
 }
 
 async function closeDevTunnel() {
-  if (ngrokListener) {
-    try {
-      await ngrokListener.close();
-    } catch {
-      /* ignore */
-    }
-    ngrokListener = null;
-    try {
-      const ngrok = require('@ngrok/ngrok');
-      await ngrok.disconnect();
-    } catch {
-      /* ignore */
-    }
+  if (!ngrokListener) return;
+  try {
+    await ngrokListener.close();
+  } catch {
+    /* ignore */
   }
-  if (tunnelRef) {
-    try {
-      tunnelRef.close();
-    } catch {
-      /* ignore */
-    }
-    tunnelRef = null;
+  ngrokListener = null;
+  try {
+    const ngrok = require('@ngrok/ngrok');
+    await ngrok.disconnect();
+  } catch {
+    /* ignore */
   }
 }
 
-module.exports = {
-  startDevTunnel,
-  closeDevTunnel,
-};
+module.exports = { startDevTunnel, closeDevTunnel };

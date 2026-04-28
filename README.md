@@ -44,9 +44,18 @@ npm run dev:all            # API on :3000 + dashboard on :5173
 
 For inbound (`YES → payload`) you need Blooio to reach your machine. Either:
 
-1. Deploy (recommended — see below), or
-2. Local tunnel: add `NGROK_AUTHTOKEN` in `.env`, then `npm run dev:all:tunnel`.
-   The startup banner prints the public `/webhook` URL — paste it into Blooio.
+1. **Deploy** (recommended — set it once, see below), or
+2. **Local ngrok tunnel** (free, stable):
+   - Get authtoken: https://dashboard.ngrok.com/get-started/your-authtoken
+   - Reserve a free domain: https://dashboard.ngrok.com/cloud-edge/domains
+   - Add to `.env`:
+     ```
+     NGROK_AUTHTOKEN=<your-token>
+     NGROK_DOMAIN=<your>.ngrok-free.app
+     ENABLE_DEV_TUNNEL=1
+     ```
+   - Run `npm run dev:all:tunnel`. The banner prints `https://<your>.ngrok-free.app/webhook` —
+     paste it into Blooio **once**. It never changes again.
 
 ## Required Airtable schema (defaults)
 
