@@ -522,24 +522,31 @@ async function campaignLogRecordToLog(r) {
 }
 
 /**
- * Find the most recent Campaign Logs row for an inbound phone.
+ * Find the most recent Campaign Logs row for an inbound phone, optionally
+ * scoped to a specific Company Info record (avoids cross-company collisions
+ * when the same number exists in multiple companies' logs).
  *
  * Strategy (cheap → robust):
  *   1. Equality on the phone field with E.164/national variants.
  *   2. FIND on last 10 digits (handles +1, punctuation, extensions, etc.).
  *
  * @param {string} phone
+ * @param {string} [companyRecordId] Optional Company Info record id (rec…) to scope the search.
  */
-async function getCampaignLogByPhone(phone) {
+async function getCampaignLogByPhone(phone, companyRecordId) {
   const F = FIELDS.log;
   const variants = phoneVariants(phone);
   if (!variants.length) return null;
 
   const b = getBase();
   const tableName = TABLES.campaignLogs;
+  const scope = companyRecordId
+    ? `, FIND('${escFormula(companyRecordId)}', ARRAYJOIN({${F.companyId}}))`
+    : '';
 
   const eqClauses = variants.map((v) => `{${F.phone}} = '${escFormula(v)}'`);
-  const eqFormula = eqClauses.length === 1 ? eqClauses[0] : `OR(${eqClauses.join(', ')})`;
+  const eqOr = eqClauses.length === 1 ? eqClauses[0] : `OR(${eqClauses.join(', ')})`;
+  const eqFormula = scope ? `AND(${eqOr}${scope})` : eqOr;
   try {
     const records = await b(tableName)
       .select({ filterByFormula: eqFormula, maxRecords: 100 })
@@ -556,12 +563,12 @@ async function getCampaignLogByPhone(phone) {
 
   const ten = last10(phone);
   if (ten) {
+    const findFormula = scope
+      ? `AND(FIND('${escFormula(ten)}', {${F.phone}})${scope})`
+      : `FIND('${escFormula(ten)}', {${F.phone}})`;
     try {
       const records = await b(tableName)
-        .select({
-          filterByFormula: `FIND('${escFormula(ten)}', {${F.phone}})`,
-          maxRecords: 100,
-        })
+        .select({ filterByFormula: findFormula, maxRecords: 100 })
         .firstPage();
       if (records.length) {
         records.sort((a, c) => recordCreatedMs(c) - recordCreatedMs(a));
@@ -573,7 +580,82 @@ async function getCampaignLogByPhone(phone) {
       });
     }
   }
+
+  // Fallback: if scoped search returned nothing, retry unscoped before giving up.
+  if (companyRecordId) {
+    log.warn('scoped lookup empty — retrying unscoped', { companyRecordId, phone });
+    return getCampaignLogByPhone(phone);
+  }
   return null;
+}
+
+/**
+ * Find a Company Info row whose Blooio phone number matches the given number.
+ * Useful for inbound webhooks that include the receiving Blooio number — we
+ * use it to identify which company the customer texted, so we can scope the
+ * Campaign Log lookup.
+ *
+ * @param {string} phone Receiving Blooio number from the webhook body
+ */
+async function findCompanyByBlooioPhoneNumber(phone) {
+  const target = last10(phone);
+  if (!target) return null;
+  try {
+    const records = await getBase()(TABLES.companyInfo).select({ maxRecords: 200 }).firstPage();
+    for (const r of records) {
+      const info = companyInfoFromRecord(r);
+      const candidate = last10(info.blooioPhoneNumber || '');
+      if (candidate && candidate === target) return info;
+    }
+  } catch (err) {
+    log.warn('findCompanyByBlooioPhoneNumber failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return null;
+}
+
+/**
+ * Add a phone number to the Global DNC table (idempotent).
+ * Used for STOP/UNSUBSCRIBE replies to comply with TCPA and carrier rules.
+ *
+ * @param {string} phone E.164 phone, e.g. "+14258942169"
+ * @param {string} [companyId] Optional Company ID text (e.g. "BUS-1") for traceability
+ * @param {string} [reason] Optional reason ("STOP", "manual", etc.)
+ */
+async function addToDNC(phone, companyId, reason = 'STOP') {
+  if (!phone) return;
+  if (await checkDNC(phone)) return;
+  const fields = { [FIELDS.globalDnc.phone]: phone };
+  // Only add optional metadata fields if they exist on the user's table; tolerate UNKNOWN_FIELD_NAME.
+  if (companyId) fields['Company ID'] = companyId;
+  if (reason) fields.Reason = reason;
+  fields['Added At'] = new Date().toISOString();
+
+  const tryCreate = async (payload) => {
+    await getBase()(TABLES.globalDnc).create([{ fields: payload }]);
+  };
+  let payload = { ...fields };
+  for (;;) {
+    try {
+      await tryCreate(payload);
+      return;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const m = msg.match(/Unknown field name:\s*"([^"]+)"/i);
+      if (!m) {
+        log.warn('addToDNC failed', { err: msg, phone });
+        return;
+      }
+      const bad = m[1];
+      if (!(bad in payload)) {
+        log.warn('addToDNC failed (unknown field)', { err: msg, phone });
+        return;
+      }
+      delete payload[bad];
+      if (!Object.keys(payload).length) return;
+    }
+  }
 }
 
 /* ───────────────────────── message history (optional) ───────────────────────── */
@@ -658,6 +740,9 @@ module.exports = {
   customerRewardDisplayText,
   // dnc
   checkDNC,
+  addToDNC,
+  // company lookups
+  findCompanyByBlooioPhoneNumber,
   // logs
   createCampaignLog,
   createCampaignLogBestEffort: createCampaignLog,

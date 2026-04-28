@@ -2,15 +2,24 @@
  * Inbound webhook from Blooio.
  *
  * Flow when a customer texts back:
- *   1. Find the Campaign Logs row for this phone (last 10 digits FIND fallback).
- *   2. Mark "Replied At" + "Latest Reply".
- *   3. If the body is affirmative ("yes/y/sure/ok") → send the payload SMS,
- *      mark status "Payload Sent".
- *      Else → mark "Replied" and (optionally) send the inbound reminder.
+ *   1. Identify which company received the message (via the receiving Blooio
+ *      number in the webhook body) — used to scope the lookup so the same
+ *      customer phone can exist in multiple companies' Campaign Logs.
+ *   2. Find the Campaign Logs row for this phone (scoped, last-10-digit FIND
+ *      fallback, then unscoped fallback).
+ *   3. Mark "Replied At" + "Latest Reply".
+ *   4. Detect TCPA opt-out (STOP / UNSUBSCRIBE / etc.):
+ *        → add phone to Global DNC
+ *        → mark log "Failed/Opt-Out"
+ *        → send the opt-out confirmation SMS (carrier-required best practice)
+ *      Otherwise:
+ *        → if affirmative ("yes/y/sure/ok"): send the payload SMS, mark
+ *          "Payload Sent" (falls back to PIPER_DEFAULT_SMS_TEMPLATE if the
+ *          company forgot to fill in a payload template).
+ *        → else: mark "Replied" and (optionally) send the inbound reminder.
  *
- * Production note: Blooio cannot reach http://localhost. The webhook URL must
- * be a public HTTPS endpoint (deployed API or ngrok). This file does not assume
- * any tunneling; it only requires the request to actually arrive.
+ * The handler ACKs Blooio with 200 immediately so retries don't pile up;
+ * processing happens asynchronously in the background.
  */
 
 const express = require('express');
@@ -34,10 +43,24 @@ router.get('/', (_req, res) =>
 
 /* ───────────────────────── parsing ───────────────────────── */
 
+function normalizeText(text) {
+  return String(text || '').trim().toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function isOptOutMessage(text) {
+  const t = normalizeText(text);
+  if (!t) return false;
+  for (const kw of SERVER.optOutKeywords) {
+    const word = kw.toLowerCase();
+    const re = new RegExp(`(^|\\s)${word.replace(/\s+/g, '\\s+')}(\\s|$)`);
+    if (re.test(t)) return true;
+  }
+  return false;
+}
+
 function isAffirmativeReply(text) {
-  const raw = String(text || '').trim().toLowerCase();
-  if (!raw) return false;
-  const t = raw.replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  const t = normalizeText(text);
+  if (!t) return false;
   if (t === 'y' || /^yes\b/.test(t) || t === 'yeah' || t === 'yep' || t === 'yup') return true;
   if (/\byes\b/.test(t) || /\bsure\b/.test(t) || /\bok\b/.test(t) || /\bokay\b/.test(t))
     return true;
@@ -90,6 +113,16 @@ function parseInboundMessage(req) {
     'phone',
     'identifier',
   ]);
+  // The Blooio number that received the message — used to identify which
+  // company's account this is for in a multi-tenant setup.
+  const receivedOn = pickFirst(layers, [
+    'internal_id',
+    'recipient',
+    'to',
+    'To',
+    'recipient_id',
+    'destination',
+  ]);
   const rawTs = pickFirst(layers, ['received_at', 'timestamp', 'sent_at']);
 
   let repliedAt = null;
@@ -109,6 +142,7 @@ function parseInboundMessage(req) {
     type: 'inbound',
     from,
     text,
+    receivedOn,
     repliedAt,
     event: event || headerEvent || 'message.received',
   };
@@ -156,7 +190,7 @@ router.post('/', async (req, res) => {
     return res.status(200).json({ ok: true, ignored: parsed.event });
   }
 
-  const { from, text, event, repliedAt } = parsed;
+  const { from, text, event, repliedAt, receivedOn } = parsed;
 
   // Always answer fast (200) so Blooio doesn't retry. Heavy work runs after the response.
   res.status(200).json({ ok: true });
@@ -166,9 +200,29 @@ router.post('/', async (req, res) => {
       log.warn('inbound has no sender', { bodyHead: JSON.stringify(req.body).slice(0, 300) });
       return;
     }
-    log.info('inbound', { from, event, textPreview: String(text).slice(0, 64) });
+    log.info('inbound', {
+      from,
+      receivedOn: receivedOn || '(none)',
+      event,
+      textPreview: String(text).slice(0, 64),
+    });
 
-    const cl = await airtable.getCampaignLogByPhone(from);
+    // 1. Identify the company via the Blooio receiving number (multi-tenant scoping).
+    let scopingCompany = null;
+    if (receivedOn) {
+      scopingCompany = await airtable.findCompanyByBlooioPhoneNumber(receivedOn);
+      if (scopingCompany) {
+        log.info('scoped to company', {
+          companyId: scopingCompany.companyId,
+          recordId: scopingCompany.recordId,
+        });
+      } else {
+        log.warn('receiving number not matched to any company', { receivedOn });
+      }
+    }
+
+    // 2. Find the Campaign Logs row (scoped if possible, falls back to unscoped).
+    const cl = await airtable.getCampaignLogByPhone(from, scopingCompany?.recordId);
     if (!cl) {
       log.warn('no Campaign Logs match for sender', {
         from,
@@ -179,7 +233,10 @@ router.post('/', async (req, res) => {
     }
     log.info('campaign log matched', { logId: cl.id, companyId: cl.companyId });
 
-    const company = cl.companyInfo || (await airtable.getCompanyInfo(cl.companyId));
+    const company =
+      cl.companyInfo ||
+      scopingCompany ||
+      (await airtable.getCompanyInfo(cl.companyId));
     if (!company || !company.blooioApiKey) {
       log.error('no company / blooio key', { companyId: cl.companyId });
       return;
@@ -218,6 +275,35 @@ router.post('/', async (req, res) => {
       })
     );
 
+    // 3. TCPA opt-out — must happen before any other reply path.
+    if (isOptOutMessage(text)) {
+      log.info('opt-out detected', { from, companyId: cl.companyId });
+      tasks.push(
+        airtable.addToDNC(from, cl.companyId, 'STOP').catch((e) =>
+          log.warn('addToDNC failed', { err: e.message || String(e) })
+        )
+      );
+      tasks.push(
+        safeUpdateCampaignLog(cl.id, { [FIELDS.log.status]: STATUS.log.optOut })
+      );
+      const confirmation = String(SERVER.optOutConfirmation || '').trim();
+      if (confirmation) {
+        tasks.push(
+          sendSMS({
+            apiKey: company.blooioApiKey,
+            to: from,
+            text: confirmation,
+            idempotencyKey: `piper:optout:${cl.id}:${startedMs}`,
+          }).catch((e) =>
+            log.warn('opt-out confirmation send failed', { err: e.message || String(e) })
+          )
+        );
+      }
+      await Promise.allSettled(tasks);
+      return;
+    }
+
+    // 4. Notify the company owner of any inbound (visibility).
     if (company.ownerMobile) {
       const ownerMsg = `Reply from ${from}: ${text}`.slice(0, 1600);
       tasks.push(
@@ -229,6 +315,7 @@ router.post('/', async (req, res) => {
       );
     }
 
+    // 5. Non-affirmative replies: mark Replied + optional reminder.
     if (!isAffirmativeReply(text)) {
       tasks.push(
         safeUpdateCampaignLog(cl.id, { [FIELDS.log.status]: STATUS.log.replied })
@@ -252,11 +339,18 @@ router.post('/', async (req, res) => {
       return;
     }
 
-    // Affirmative reply → send the payload follow-up.
-    const tpl = getPayloadTemplate(company, cl.campaignType, reward);
+    // 6. Affirmative reply → send the payload follow-up.
+    //    If the company hasn't configured a payload template for this campaign,
+    //    fall back to PIPER_DEFAULT_SMS_TEMPLATE so the customer never gets silence.
+    let tpl = getPayloadTemplate(company, cl.campaignType, reward);
+    let usedFallback = false;
+    if (!String(tpl || '').trim() && SERVER.defaultSmsTemplate) {
+      tpl = SERVER.defaultSmsTemplate;
+      usedFallback = true;
+    }
     const body = replacePlaceholders(tpl, placeholders).trim();
     if (!body) {
-      log.warn('YES with empty payload template', {
+      log.warn('YES with empty payload template (no fallback configured)', {
         companyId: cl.companyId,
         campaign: cl.campaignType,
         reward,
@@ -275,7 +369,11 @@ router.post('/', async (req, res) => {
         text: body,
         idempotencyKey: `piper:follow:${cl.id}:${startedMs}`,
       });
-      log.info('payload sent', { to: from, ms: Date.now() - startedMs });
+      log.info('payload sent', {
+        to: from,
+        ms: Date.now() - startedMs,
+        fallback: usedFallback,
+      });
       tasks.push(
         safeUpdateCampaignLog(cl.id, { [FIELDS.log.status]: STATUS.log.payloadSent })
       );

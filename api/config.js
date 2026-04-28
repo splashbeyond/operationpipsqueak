@@ -105,6 +105,7 @@ const STATUS = {
       process.env.AIRTABLE_WEBHOOK_CAMPAIGN_LOG_STATUS_PAYLOAD_SENT,
       'Payload Sent'
     ),
+    optOut: str(process.env.AIRTABLE_WEBHOOK_CAMPAIGN_LOG_STATUS_OPT_OUT, 'Failed/Opt-Out'),
   },
 };
 
@@ -199,6 +200,22 @@ const SERVER = {
     ''
   ),
   defaultSmsTemplate: trim(process.env.PIPER_DEFAULT_SMS_TEMPLATE),
+  /**
+   * TCPA-compliant opt-out confirmation sent when a customer texts STOP.
+   * Empty string = don't send a confirmation (the phone is still added to DNC).
+   */
+  optOutConfirmation: str(
+    process.env.PIPER_OPTOUT_CONFIRMATION,
+    "You're unsubscribed and will not receive further messages. Reply START to resubscribe."
+  ),
+  /** Words that opt a customer out (case-insensitive, whole-word). */
+  optOutKeywords: String(
+    process.env.PIPER_OPTOUT_KEYWORDS ||
+      'stop,stopall,unsubscribe,end,quit,cancel,remove,optout,opt out,opt-out'
+  )
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
   isProduction: process.env.NODE_ENV === 'production',
   enableDevTunnel: flag(process.env.ENABLE_DEV_TUNNEL),
   webhookLogBody: flag(process.env.WEBHOOK_LOG_BODY),
