@@ -90,6 +90,27 @@ function fieldFirst(r, ...fieldNames) {
   return '';
 }
 
+/**
+ * Follow-up SMS after YES for no-show, cancellation, and reactivation: same
+ * Booking payload cells, with reward vs no-reward resolved by hasRewardOffer().
+ */
+function payloadBookingPair(r) {
+  return {
+    reward: fieldFirst(
+      r,
+      'Payload: Booking (Reward)',
+      'Payload: No-Show (Reward)',
+      'Payload: No Show (Reward)'
+    ),
+    noReward: fieldFirst(
+      r,
+      'Payload: Booking (No Reward)',
+      'Payload: No-Show (No Reward)',
+      'Payload: No Show (No Reward)'
+    ),
+  };
+}
+
 function companyInfoFromRecord(r) {
   const credCombined = r.get(
     process.env.AIRTABLE_COMPANY_BLOOIO_CREDENTIALS_FIELD || 'Blooio API Key & Phone'
@@ -154,28 +175,9 @@ function companyInfoFromRecord(r) {
         reward: r.get('Payload: Review (Reward)') || '',
         noReward: r.get('Payload: Review (No Reward)') || '',
       },
-      no_show: {
-        reward: fieldFirst(
-          r,
-          'Payload: Booking (Reward)',
-          'Payload: No-Show (Reward)',
-          'Payload: No Show (Reward)'
-        ),
-        noReward: fieldFirst(
-          r,
-          'Payload: Booking (No Reward)',
-          'Payload: No-Show (No Reward)',
-          'Payload: No Show (No Reward)'
-        ),
-      },
-      cancellation: {
-        reward: r.get('Payload: Cancellation (Reward)') || '',
-        noReward: r.get('Payload: Cancellation (No Reward)') || '',
-      },
-      reactivation: {
-        reward: r.get('Payload: Reactivation (Reward)') || '',
-        noReward: r.get('Payload: Reactivation (No Reward)') || '',
-      },
+      no_show: payloadBookingPair(r),
+      cancellation: payloadBookingPair(r),
+      reactivation: payloadBookingPair(r),
       referral: {
         reward: r.get('Payload: Referral (Reward)') || '',
         noReward: r.get('Payload: Referral (No Reward)') || '',

@@ -4,7 +4,8 @@
  * Outbound (handshake): pick per-campaign handshake (reward/no-reward), fall back to
  *                        global Handshake Matrix.
  * Inbound (payload after YES): pick per-campaign payload (reward/no-reward), fall back to
- *                              global Payload Matrix (Reward/No Reward).
+ *                              global Payload Matrix (Reward/No Reward). No-show, cancellation,
+ *                              and reactivation share the Booking payload pair from Company Info.
  *
  * Placeholders: [Name], [Business Name], [Review Link], [Booking Link],
  *               [Membership Link], [Reward].

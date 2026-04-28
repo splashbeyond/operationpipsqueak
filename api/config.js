@@ -12,8 +12,10 @@
  *                 Per-campaign templates (exact Airtable names — code also tries No Show / No-Show):
  *                 Handshake: Review | No-Show or No Show | Cancellation | Reactivation |
  *                 Referral | Upsell — each (Reward) and (No Reward).
- *                 Payload: Review | Booking or No-Show or No Show (no-show campaign) |
- *                 Cancellation | Reactivation | Referral | Upsell — each (Reward) / (No Reward).
+ *                 Payload: Review | Referral | Upsell — each (Reward) / (No Reward).
+ *                 No-show, cancellation, reactivation YES-replies use the same Booking payload
+ *                 columns (Payload: Booking …, with No-Show / No Show aliases), reward vs no-reward
+ *                 from the customer Reward field / batch reward.
  *   Uploads: Status, Batch ID, Batch Name (optional label from UI), Company (link), Company ID (text)
  *   Global DNC: Phone Number
  */
