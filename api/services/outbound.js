@@ -64,10 +64,11 @@ async function processOneAwaitingCustomer() {
 
     const text = resolveOutboundBody(customer, company);
     const idempotencyKey = `piper:${customer.id}:${customer.phone}`;
-    const snapshotUrl =
-      [company.reviewLink, company.bookingLink, company.membershipLink].find(
-        (u) => u && String(u).trim() !== ''
-      ) || '';
+    const snapshotUrl = OPTIONS.logOmitSnapshotLinks
+      ? ''
+      : [company.reviewLink, company.bookingLink, company.membershipLink].find(
+          (u) => u && String(u).trim() !== ''
+        ) || '';
 
     const logId = await airtable.createCampaignLog({
       companyId: customer.companyId,

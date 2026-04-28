@@ -147,6 +147,8 @@ const OPTIONS = {
   logOmitCampaign: flag(process.env.AIRTABLE_CAMPAIGN_LOG_OMIT_CAMPAIGN),
   logOmitTargetPayload: flag(process.env.AIRTABLE_CAMPAIGN_LOG_OMIT_TARGET_PAYLOAD),
   logOmitTargetHandshake: flag(process.env.AIRTABLE_CAMPAIGN_LOG_OMIT_TARGET_HANDSHAKE),
+  /** Do not write Snapshot: Links (safe if you deleted that column in Airtable). */
+  logOmitSnapshotLinks: flag(process.env.AIRTABLE_CAMPAIGN_LOG_OMIT_SNAPSHOT_LINKS),
 
   uploadOmitBatchId: flag(process.env.AIRTABLE_UPLOAD_OMIT_BATCH_ID),
   /** Set if your Uploads table has no "Batch Name" column. */

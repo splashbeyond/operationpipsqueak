@@ -524,7 +524,7 @@ async function createCampaignLog(data) {
   ) {
     fields[F.batchId] = data.batchId;
   }
-  if (data.snapshotLinks && F.snapshotLinks) {
+  if (!OPTIONS.logOmitSnapshotLinks && data.snapshotLinks && F.snapshotLinks) {
     fields[F.snapshotLinks] = String(data.snapshotLinks).trim();
   }
   if (
@@ -555,6 +555,12 @@ async function createCampaignLog(data) {
     };
     if (!OPTIONS.logOmitCampaign) minimal[F.campaign] = customerCampaignLabel(data.campaignType);
     if (data.handshakeSentAt) minimal[F.handshakeSentAt] = String(data.handshakeSentAt).trim();
+    if (!OPTIONS.logOmitBatchId && fields[F.batchId] !== undefined) {
+      minimal[F.batchId] = fields[F.batchId];
+    }
+    if (!OPTIONS.logOmitTargetHandshake && fields[F.targetHandshake] !== undefined) {
+      minimal[F.targetHandshake] = fields[F.targetHandshake];
+    }
 
     log.warn('createCampaignLog retrying minimal', { err: msg });
     try {
