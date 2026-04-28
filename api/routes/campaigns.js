@@ -122,6 +122,7 @@ async function fetchUploadsForCompany(companyId) {
     id: r.id,
     batchId: r.get(F.batchId),
     status: r.get(F.status),
+    totalLeads: F.totalLeads ? r.get(F.totalLeads) : undefined,
     createdAt: r._rawJson?.createdTime || null,
   }));
 }

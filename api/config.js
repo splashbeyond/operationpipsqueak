@@ -77,6 +77,7 @@ const FIELDS = {
     companyId: str(process.env.AIRTABLE_UPLOAD_COMPANY_ID_FIELD, 'Company ID'),
     rewardField: trim(process.env.AIRTABLE_UPLOAD_REWARD_FIELD),
     attachmentsField: str(process.env.AIRTABLE_UPLOAD_ATTACHMENTS_FIELD, 'Attachments'),
+    totalLeads: str(process.env.AIRTABLE_UPLOAD_TOTAL_LEADS_FIELD, 'Total Leads'),
   },
   globalDnc: {
     phone: str(process.env.AIRTABLE_DNC_PHONE_FIELD, 'Phone Number'),
@@ -126,6 +127,7 @@ const OPTIONS = {
   uploadOmitCompanyIdText: flag(process.env.AIRTABLE_UPLOAD_OMIT_COMPANY_ID_TEXT),
   uploadSkipCompanyLink: flag(process.env.AIRTABLE_UPLOAD_SKIP_COMPANY_LINK),
   uploadSkipAttachment: flag(process.env.AIRTABLE_SKIP_UPLOAD_ATTACHMENT),
+  uploadOmitTotalLeads: flag(process.env.AIRTABLE_UPLOAD_OMIT_TOTAL_LEADS),
 };
 
 /** Customer Data → Campaign Type select label per internal key (overrideable). */

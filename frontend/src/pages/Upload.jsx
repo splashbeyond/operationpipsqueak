@@ -264,8 +264,14 @@ export function Upload() {
                   <strong>{result.skippedDnc}</strong> skipped (DNC)
                 </li>
                 <li>
-                  <strong>{result.totalLeads}</strong> rows parsed from CSV
+                  <strong>{result.totalLeads}</strong> data rows in CSV
                 </li>
+                {result.validPhoneLeads != null && result.validPhoneLeads !== result.totalLeads ? (
+                  <li>
+                    <strong>{result.validPhoneLeads}</strong> rows with a valid phone (imported +
+                    skipped)
+                  </li>
+                ) : null}
                 {result.uploadId ? (
                   <li>
                     Upload record: <code className="text-xs">{result.uploadId}</code>

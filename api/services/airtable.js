@@ -232,10 +232,29 @@ async function createUploadRecord(companyId, batchName, options = {}) {
   return created[0].id;
 }
 
-async function updateUploadStatus(recordId, status) {
-  await getBase()(TABLES.uploads).update([
-    { id: recordId, fields: { [FIELDS.upload.status]: status } },
-  ]);
+/**
+ * @param {string} recordId
+ * @param {string} status
+ * @param {Record<string, unknown>} [extraFields] e.g. Total Leads count
+ */
+async function updateUploadStatus(recordId, status, extraFields = {}) {
+  const F = FIELDS.upload;
+  /** @type {Record<string, unknown>} */
+  let fields = { [F.status]: status, ...extraFields };
+  for (;;) {
+    try {
+      await getBase()(TABLES.uploads).update([{ id: recordId, fields }]);
+      return;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const m = msg.match(/Unknown field name:\s*"([^"]+)"/i);
+      if (!m) throw err;
+      const bad = m[1];
+      if (!(bad in fields)) throw err;
+      delete fields[bad];
+      if (!Object.keys(fields).length) return;
+    }
+  }
 }
 
 /* ───────────────────────── customer data ───────────────────────── */

@@ -153,11 +153,13 @@ function extractLeads(rows, headerMap) {
 
 /**
  * @param {Buffer} fileBuffer
+ * @returns {Promise<{ leads: { name: string, phone: string, campaignType: string, reward: string }[], dataRowCount: number }>}
  */
 async function processCSV(fileBuffer) {
   const { headers, rows, rawText } = parseCSV(fileBuffer);
   const headerMap = await mapHeaders(headers, rawText);
-  return extractLeads(rows, headerMap);
+  const leads = extractLeads(rows, headerMap);
+  return { leads, dataRowCount: rows.length };
 }
 
 module.exports = {

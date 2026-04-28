@@ -14,8 +14,7 @@ const multer = require('multer');
 
 const airtable = require('../services/airtable');
 const { processCSV } = require('../services/csv');
-const { resolveOutboundBody } = require('../services/outbound');
-const { STATUS } = require('../config');
+const { STATUS, FIELDS, OPTIONS } = require('../config');
 const { logger } = require('../log');
 
 const log = logger('upload');
@@ -63,37 +62,8 @@ router.post(
       return res.status(400).json({ error: 'CSV file is required (field name: file)' });
     }
 
-    // Fail before creating rows: any Company ID works as long as Company Info is set up.
-    let step = 'validateCompany';
-    const companyRow = await airtable.getCompanyInfo(companyId);
-    if (!companyRow) {
-      return res.status(400).json({
-        error: `Unknown Company ID "${companyId}". Add a row in the Company Info table whose Company ID field exactly matches "${companyId}", then upload again.`,
-      });
-    }
-    if (!String(companyRow.blooioApiKey || '').trim()) {
-      return res.status(400).json({
-        error: `Company "${companyId}" has no Blooio API key. In Company Info, fill "Blooio API Key & Phone" (API key first), save, then upload again.`,
-      });
-    }
-    try {
-      resolveOutboundBody(
-        {
-          name: ' ',
-          campaignType: defaultCampaignType || 'review',
-          reward: batchReward || undefined,
-        },
-        companyRow
-      );
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return res.status(400).json({
-        error: `${msg} (company "${companyId}")`,
-      });
-    }
-
     let uploadRecordId = null;
-    step = 'createUploadsRow';
+    let step = 'createUploadsRow';
     try {
       uploadRecordId = await airtable.createUploadRecord(companyId, batchName, {
         reward: batchReward,
@@ -113,7 +83,7 @@ router.post(
       }
 
       step = 'parseCsv';
-      const leads = await processCSV(req.file.buffer);
+      const { leads, dataRowCount } = await processCSV(req.file.buffer);
       const batchId = batchName || uploadRecordId;
 
       let imported = 0;
@@ -142,21 +112,26 @@ router.post(
       }
 
       step = 'markUploadDone';
-      await airtable.updateUploadStatus(uploadRecordId, STATUS.upload.done);
+      const doneExtra = OPTIONS.uploadOmitTotalLeads
+        ? {}
+        : { [FIELDS.upload.totalLeads]: dataRowCount };
+      await airtable.updateUploadStatus(uploadRecordId, STATUS.upload.done, doneExtra);
 
       log.info('upload complete', {
         companyId,
         uploadId: uploadRecordId,
         imported,
         skippedDnc,
-        totalLeads: leads.length,
+        dataRowCount,
+        validPhoneLeads: leads.length,
       });
       return res.json({
         ok: true,
         uploadId: uploadRecordId,
         imported,
         skippedDnc,
-        totalLeads: leads.length,
+        totalLeads: dataRowCount,
+        validPhoneLeads: leads.length,
         attachmentError,
       });
     } catch (err) {
