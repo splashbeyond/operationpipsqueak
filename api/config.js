@@ -137,7 +137,7 @@ const OPTIONS = {
 /** Customer Data → Campaign Type select label per internal key (overrideable). */
 const CUSTOMER_CAMPAIGN_OPTIONS = {
   review: str(process.env.AIRTABLE_CUSTOMER_CAMPAIGN_OPTION_REVIEW, 'Review'),
-  no_show: str(process.env.AIRTABLE_CUSTOMER_CAMPAIGN_OPTION_NO_SHOW, 'No-Show'),
+  no_show: str(process.env.AIRTABLE_CUSTOMER_CAMPAIGN_OPTION_NO_SHOW, 'No Show'),
   cancellation: str(
     process.env.AIRTABLE_CUSTOMER_CAMPAIGN_OPTION_CANCELLATION,
     'Cancellation'
@@ -160,7 +160,7 @@ const CAMPAIGNS = [
   { value: 'referral', label: 'Referral' },
 ];
 
-/** Internal campaign key from any user input ("Review", "No-Show", "no_show", etc.). */
+/** Internal campaign key from any user input ("Review", "No Show", "no_show", etc.). */
 function campaignKey(raw) {
   const k = String(raw || '')
     .trim()
