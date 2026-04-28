@@ -73,6 +73,8 @@ const FIELDS = {
   upload: {
     status: str(process.env.AIRTABLE_UPLOAD_STATUS_FIELD, 'Status'),
     batchId: str(process.env.AIRTABLE_UPLOAD_BATCH_ID_FIELD, 'Batch ID'),
+    /** Human-readable label from the upload UI (separate from auto / primary Batch ID). */
+    batchName: str(process.env.AIRTABLE_UPLOAD_BATCH_NAME_FIELD, 'Batch Name'),
     companyLink: str(process.env.AIRTABLE_UPLOAD_COMPANY_LINK_FIELD, 'Company'),
     companyId: str(process.env.AIRTABLE_UPLOAD_COMPANY_ID_FIELD, 'Company ID'),
     rewardField: trim(process.env.AIRTABLE_UPLOAD_REWARD_FIELD),
@@ -124,6 +126,8 @@ const OPTIONS = {
   logOmitTargetPayload: flag(process.env.AIRTABLE_CAMPAIGN_LOG_OMIT_TARGET_PAYLOAD),
 
   uploadOmitBatchId: flag(process.env.AIRTABLE_UPLOAD_OMIT_BATCH_ID),
+  /** Set if your Uploads table has no "Batch Name" column. */
+  uploadOmitBatchName: flag(process.env.AIRTABLE_UPLOAD_OMIT_BATCH_NAME),
   uploadOmitCompanyIdText: flag(process.env.AIRTABLE_UPLOAD_OMIT_COMPANY_ID_TEXT),
   uploadSkipCompanyLink: flag(process.env.AIRTABLE_UPLOAD_SKIP_COMPANY_LINK),
   uploadSkipAttachment: flag(process.env.AIRTABLE_SKIP_UPLOAD_ATTACHMENT),

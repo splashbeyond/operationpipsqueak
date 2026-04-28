@@ -121,6 +121,7 @@ async function fetchUploadsForCompany(companyId) {
   return records.map((r) => ({
     id: r.id,
     batchId: r.get(F.batchId),
+    batchName: F.batchName ? r.get(F.batchName) : undefined,
     status: r.get(F.status),
     totalLeads: F.totalLeads ? r.get(F.totalLeads) : undefined,
     createdAt: r._rawJson?.createdTime || null,

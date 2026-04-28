@@ -8,8 +8,15 @@
 const Airtable = require('airtable');
 const axios = require('axios');
 
-const { TABLES, FIELDS, STATUS, OPTIONS, campaignKey, customerCampaignLabel, assertCoreEnv } =
-  require('../config');
+const {
+  TABLES,
+  FIELDS,
+  STATUS,
+  OPTIONS,
+  campaignKey,
+  customerCampaignLabel,
+  assertCoreEnv,
+} = require('../config');
 const { logger } = require('../log');
 
 const log = logger('airtable');
@@ -199,8 +206,16 @@ async function createUploadRecord(companyId, batchName, options = {}) {
   /** @type {Record<string, unknown>} */
   const fields = { [F.status]: STATUS.upload.initial };
 
-  if (!OPTIONS.uploadOmitBatchId && batchName != null && String(batchName).trim() !== '') {
-    fields[F.batchId] = String(batchName).trim();
+  const trimmedBatch =
+    batchName != null && String(batchName).trim() !== '' ? String(batchName).trim() : '';
+
+  // Friendly name from the dashboard (your base often uses an auto / formula "Batch ID").
+  if (!OPTIONS.uploadOmitBatchName && F.batchName && trimmedBatch) {
+    fields[F.batchName] = trimmedBatch;
+  }
+
+  if (!OPTIONS.uploadOmitBatchId && trimmedBatch) {
+    fields[F.batchId] = trimmedBatch;
   }
 
   const reward =
