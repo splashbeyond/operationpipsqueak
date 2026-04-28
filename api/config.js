@@ -10,7 +10,7 @@
  *                 Payload Matrix (Reward), Payload Matrix (No Reward),
  *                 Booking Link, Review Link, Membership Link, Owner Mobile,
  *                 Per-campaign handshake/payload columns (see TEMPLATES below)
- *   Uploads: Status, Batch ID (optional), Company (link), Company ID (text)
+ *   Uploads: Status, Batch ID, Batch Name (optional label from UI), Company (link), Company ID (text)
  *   Global DNC: Phone Number
  */
 
