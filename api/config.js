@@ -7,9 +7,13 @@
  *   Campaign Logs: Company ID (link), Phone Number, Campaign Type, Status,
  *                  Latest Reply, Replied At, Handshake Sent At, Snapshot: Links, Target Payload
  *   Company Info: Company ID, Business Name, Blooio API Key & Phone, Handshake Matrix,
- *                 Payload Matrix (Reward), Payload Matrix (No Reward),
- *                 Booking Link, Review Link, Membership Link, Owner Mobile,
- *                 Per-campaign handshake/payload columns (see TEMPLATES below)
+ *                 Payload Matrix (Reward), Payload Matrix (No Reward), Inbound Reminder,
+ *                 Booking Link, Review Link, Membership Link (or Upsell Link), Owner Mobile,
+ *                 Per-campaign templates (exact Airtable names — code also tries No Show / No-Show):
+ *                 Handshake: Review | No-Show or No Show | Cancellation | Reactivation |
+ *                 Referral | Upsell — each (Reward) and (No Reward).
+ *                 Payload: Review | Booking or No-Show or No Show (no-show campaign) |
+ *                 Cancellation | Reactivation | Referral | Upsell — each (Reward) / (No Reward).
  *   Uploads: Status, Batch ID, Batch Name (optional label from UI), Company (link), Company ID (text)
  *   Global DNC: Phone Number
  */

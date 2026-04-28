@@ -81,6 +81,15 @@ function parseBlooioCredsCombined(combined) {
   return { apiKey: s, phoneNumber: '' };
 }
 
+/** First non-empty string from record fields (tries alternate Airtable header spellings). */
+function fieldFirst(r, ...fieldNames) {
+  for (const name of fieldNames) {
+    const v = r.get(name);
+    if (v != null && String(v).trim() !== '') return String(v).trim();
+  }
+  return '';
+}
+
 function companyInfoFromRecord(r) {
   const credCombined = r.get(
     process.env.AIRTABLE_COMPANY_BLOOIO_CREDENTIALS_FIELD || 'Blooio API Key & Phone'
@@ -112,8 +121,16 @@ function companyInfoFromRecord(r) {
         noReward: r.get('Handshake: Review (No Reward)') || '',
       },
       no_show: {
-        reward: r.get('Handshake: No-Show (Reward)') || '',
-        noReward: r.get('Handshake: No-Show (No Reward)') || '',
+        reward: fieldFirst(
+          r,
+          'Handshake: No-Show (Reward)',
+          'Handshake: No Show (Reward)'
+        ),
+        noReward: fieldFirst(
+          r,
+          'Handshake: No-Show (No Reward)',
+          'Handshake: No Show (No Reward)'
+        ),
       },
       cancellation: {
         reward: r.get('Handshake: Cancellation (Reward)') || '',
@@ -138,9 +155,18 @@ function companyInfoFromRecord(r) {
         noReward: r.get('Payload: Review (No Reward)') || '',
       },
       no_show: {
-        reward: r.get('Payload: Booking (Reward)') || r.get('Payload: No-Show (Reward)') || '',
-        noReward:
-          r.get('Payload: Booking (No Reward)') || r.get('Payload: No-Show (No Reward)') || '',
+        reward: fieldFirst(
+          r,
+          'Payload: Booking (Reward)',
+          'Payload: No-Show (Reward)',
+          'Payload: No Show (Reward)'
+        ),
+        noReward: fieldFirst(
+          r,
+          'Payload: Booking (No Reward)',
+          'Payload: No-Show (No Reward)',
+          'Payload: No Show (No Reward)'
+        ),
       },
       cancellation: {
         reward: r.get('Payload: Cancellation (Reward)') || '',
