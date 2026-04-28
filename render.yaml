@@ -28,6 +28,8 @@ services:
         generateValue: true
       - key: BLOOIO_BASE_URL
         value: https://backend.blooio.com/v2/api
+      - key: PIPER_DEFAULT_SMS_TEMPLATE
+        sync: false  # set in dashboard if you want a fallback when a campaign template is empty
       # Schema overrides for the Piper "Universal CSV" base. Adjust if yours differs.
       - key: AIRTABLE_CUSTOMER_PHONE_FIELD
         value: Phone Number
