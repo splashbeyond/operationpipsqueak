@@ -1,6 +1,9 @@
 /**
  * Outbound worker — picks the next "Awaiting" Customer Data row,
  * creates a Campaign Logs row, sends the handshake SMS, marks status.
+ *
+ * Handshake dedupe: if Campaign Logs already has this company + phone + campaign
+ * in a blocking status, skip send and mark Customer Data Skipped (see HANDSHAKE_DEDUPE).
  */
 
 const airtable = require('./airtable');
@@ -60,6 +63,22 @@ async function processOneAwaitingCustomer() {
     if (!company) throw new Error(`Company not found: ${customer.companyId}`);
     if (!company.blooioApiKey) {
       throw new Error(`Missing Blooio API key for company ${customer.companyId}`);
+    }
+
+    const blocked = await airtable.hasBlockingCampaignLane(
+      customer.companyId,
+      customer.phone,
+      customer.campaignType,
+      company
+    );
+    if (blocked) {
+      log.info('handshake dedupe: skip (existing lane)', {
+        companyId: customer.companyId,
+        phone: customer.phone,
+        campaign: customer.campaignType,
+      });
+      await airtable.markCustomerHandshakeDedupeSkip(customer.id);
+      return true;
     }
 
     const text = resolveOutboundBody(customer, company);

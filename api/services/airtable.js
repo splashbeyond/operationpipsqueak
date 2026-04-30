@@ -13,6 +13,7 @@ const {
   FIELDS,
   STATUS,
   OPTIONS,
+  HANDSHAKE_DEDUPE,
   campaignKey,
   customerCampaignLabel,
   assertCoreEnv,
@@ -22,6 +23,7 @@ const { logger } = require('../log');
 const log = logger('airtable');
 
 let _base;
+let _warnedDedupeOmitCampaign;
 
 function getBase() {
   if (_base) return _base;
@@ -684,6 +686,90 @@ async function getCampaignLogByPhone(phone, companyRecordId) {
 }
 
 /**
+ * Outbound handshake dedupe: true if Campaign Logs already has a row in a
+ * "blocking" status for this company + phone + campaign (same lane).
+ * Failed / opt-out rows do not block; a different campaign type is a different lane.
+ */
+async function hasBlockingCampaignLane(companyIdText, phone, rawCampaignType, preloadedCompany) {
+  if (OPTIONS.disableHandshakeDedupe) return false;
+  if (OPTIONS.logOmitCampaign) {
+    if (!_warnedDedupeOmitCampaign) {
+      _warnedDedupeOmitCampaign = true;
+      log.warn(
+        'handshake dedupe disabled: AIRTABLE_CAMPAIGN_LOG_OMIT_CAMPAIGN (cannot key lanes by campaign)'
+      );
+    }
+    return false;
+  }
+
+  const F = FIELDS.log;
+  const ten = last10(phone);
+  if (!ten) return false;
+
+  const company = preloadedCompany || (await getCompanyInfo(companyIdText));
+  if (!company) return false;
+  if (OPTIONS.logCompanyIdIsLink && !company.recordId) return false;
+
+  const blockSetLC = new Set(
+    (HANDSHAKE_DEDUPE.blockStatuses || [])
+      .map((s) => String(s).trim().toLowerCase())
+      .filter(Boolean)
+  );
+  if (!blockSetLC.size) return false;
+
+  let companyClause;
+  if (OPTIONS.logCompanyIdIsLink) {
+    companyClause = `FIND('${escFormula(company.recordId)}', ARRAYJOIN({${F.companyId}}))`;
+  } else {
+    companyClause = `{${F.companyId}} = '${escFormula(String(companyIdText))}'`;
+  }
+
+  const phoneClause = `FIND('${escFormula(ten)}', {${F.phone}})`;
+  const campaignLabel = customerCampaignLabel(campaignKey(rawCampaignType));
+  const formula = `AND(${phoneClause}, ${companyClause}, {${F.campaign}} = '${escFormula(campaignLabel)}')`;
+
+  try {
+    const records = await getBase()(TABLES.campaignLogs)
+      .select({ filterByFormula: formula, maxRecords: 100 })
+      .firstPage();
+
+    for (const r of records) {
+      const st = String(r.get(F.status) ?? '').trim().toLowerCase();
+      if (blockSetLC.has(st)) return true;
+    }
+  } catch (err) {
+    log.warn('hasBlockingCampaignLane failed (allowing send)', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+  return false;
+}
+
+/** Mark Customer Data row after skipping duplicate handshake (prefer Skipped, else Failed). */
+async function markCustomerHandshakeDedupeSkip(recordId) {
+  if (!recordId) return;
+  try {
+    await getBase()(TABLES.customerData).update([
+      { id: recordId, fields: { [FIELDS.customer.status]: STATUS.customer.skipped } },
+    ]);
+  } catch (err) {
+    log.warn('Handshake dedupe: Skipped status not in Airtable, using Failed', {
+      err: err instanceof Error ? err.message : String(err),
+      recordId,
+    });
+    try {
+      await updateCustomerStatus(recordId, STATUS.customer.failed);
+    } catch (err2) {
+      log.error('Handshake dedupe: could not mark customer Failed', {
+        err: err2 instanceof Error ? err2.message : String(err2),
+        recordId,
+      });
+    }
+  }
+}
+
+/**
  * Find a Company Info row whose Blooio phone number matches the given number.
  * Useful for inbound webhooks that include the receiving Blooio number — we
  * use it to identify which company the customer texted, so we can scope the
@@ -843,6 +929,8 @@ module.exports = {
   createCampaignLogBestEffort: createCampaignLog,
   updateCampaignLog,
   getCampaignLogByPhone,
+  hasBlockingCampaignLane,
+  markCustomerHandshakeDedupeSkip,
   // misc
   createMessageHistoryEntry,
 };
