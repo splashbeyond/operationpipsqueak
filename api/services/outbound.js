@@ -2,8 +2,9 @@
  * Outbound worker — picks the next "Awaiting" Customer Data row,
  * creates a Campaign Logs row, sends the handshake SMS, marks status.
  *
- * Handshake dedupe: if Campaign Logs already has this company + phone + campaign
- * in a blocking status, skip send and mark Customer Data Skipped (see HANDSHAKE_DEDUPE).
+ * Handshake dedupe: (1) same Batch ID + company + phone + campaign — only the
+ * earliest Customer Data row may send (parallel-safe before Campaign Logs exist).
+ * (2) Campaign Logs lane in a blocking status (see HANDSHAKE_DEDUPE).
  */
 
 const airtable = require('./airtable');
@@ -54,15 +55,31 @@ async function processOneAwaitingCustomer() {
   if (!batch.length) return false;
 
   const customer = batch[0];
-  if (!OPTIONS.customerOmitProcessingLock) {
-    await airtable.updateCustomerStatus(customer.id, STATUS.customer.processing);
-  }
 
   try {
     const company = await airtable.getCompanyInfo(customer.companyId);
     if (!company) throw new Error(`Company not found: ${customer.companyId}`);
     if (!company.blooioApiKey) {
       throw new Error(`Missing Blooio API key for company ${customer.companyId}`);
+    }
+
+    const earlierDup = await airtable.hasEarlierActiveCustomerHandshakeDuplicate(
+      customer,
+      company
+    );
+    if (earlierDup) {
+      log.info('handshake dedupe: skip (earlier customer row same batch)', {
+        companyId: customer.companyId,
+        phone: customer.phone,
+        campaign: customer.campaignType,
+        batchId: customer.batchId,
+      });
+      await airtable.markCustomerHandshakeDedupeSkip(customer.id);
+      return true;
+    }
+
+    if (!OPTIONS.customerOmitProcessingLock) {
+      await airtable.updateCustomerStatus(customer.id, STATUS.customer.processing);
     }
 
     const blocked = await airtable.hasBlockingCampaignLane(

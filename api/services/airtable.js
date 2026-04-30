@@ -375,6 +375,7 @@ async function getAwaitingCustomers(limit = 25) {
       batchId: r.get(CF.batchId),
       status: r.get(CF.status),
       reward: r.get(CF.reward),
+      createdTime: r._rawJson?.createdTime || '',
     });
   }
   return out;
@@ -686,6 +687,67 @@ async function getCampaignLogByPhone(phone, companyRecordId) {
 }
 
 /**
+ * Same Batch ID + company + phone + campaign: if another Customer Data row was
+ * created earlier and is still Awaiting, Processing, or Sent, skip. Fills the gap
+ * where parallel workers all pass hasBlockingCampaignLane before any Campaign Log exists.
+ */
+async function hasEarlierActiveCustomerHandshakeDuplicate(customer, preloadedCompany) {
+  if (OPTIONS.customerOmitBatchId) return false;
+  const batchId = customer.batchId != null ? String(customer.batchId).trim() : '';
+  if (!batchId || !customer.id || !customer.phone) return false;
+
+  const company = preloadedCompany || (await getCompanyInfo(customer.companyId));
+  if (!company) return false;
+
+  const CF = FIELDS.customer;
+  const ten = last10(customer.phone);
+  if (!ten) return false;
+
+  let companyClause;
+  if (OPTIONS.customerCompanyIdIsLink) {
+    if (!company.recordId) return false;
+    companyClause = `FIND('${escFormula(company.recordId)}', ARRAYJOIN({${CF.companyId}}))`;
+  } else {
+    companyClause = `{${CF.companyId}} = '${escFormula(String(customer.companyId))}'`;
+  }
+
+  const phoneClause = `FIND('${escFormula(ten)}', {${CF.phone}})`;
+  const campaignLabel = customerCampaignLabel(campaignKey(customer.campaignType));
+  const batchClause = `{${CF.batchId}} = '${escFormula(batchId)}'`;
+  const formula = `AND(${phoneClause}, ${companyClause}, {${CF.campaign}} = '${escFormula(campaignLabel)}', ${batchClause})`;
+
+  const blockingLC = new Set(
+    [STATUS.customer.awaiting, STATUS.customer.processing, STATUS.customer.sent].map((s) =>
+      String(s).trim().toLowerCase()
+    )
+  );
+
+  try {
+    const records = await getBase()(TABLES.customerData)
+      .select({ filterByFormula: formula, maxRecords: 100 })
+      .firstPage();
+
+    const myCreated = customer.createdTime ? Date.parse(customer.createdTime) || 0 : 0;
+
+    for (const r of records) {
+      if (r.id === customer.id) continue;
+      const st = String(r.get(CF.status) ?? '').trim().toLowerCase();
+      if (!blockingLC.has(st)) continue;
+
+      const otherCreated = recordCreatedMs(r);
+      if (otherCreated > 0 && myCreated > 0 && otherCreated < myCreated) return true;
+      if (otherCreated === myCreated && String(r.id) < String(customer.id)) return true;
+    }
+  } catch (err) {
+    log.warn('hasEarlierActiveCustomerHandshakeDuplicate failed (allowing send)', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+  return false;
+}
+
+/**
  * Outbound handshake dedupe: true if Campaign Logs already has a row in a
  * "blocking" status for this company + phone + campaign (same lane).
  * Failed / opt-out rows do not block; a different campaign type is a different lane.
@@ -929,6 +991,7 @@ module.exports = {
   createCampaignLogBestEffort: createCampaignLog,
   updateCampaignLog,
   getCampaignLogByPhone,
+  hasEarlierActiveCustomerHandshakeDuplicate,
   hasBlockingCampaignLane,
   markCustomerHandshakeDedupeSkip,
   // misc
