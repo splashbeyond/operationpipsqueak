@@ -264,6 +264,10 @@ export function Upload() {
                   <strong>{result.skippedDnc}</strong> skipped (DNC)
                 </li>
                 <li>
+                  <strong>{result.skippedDuplicate ?? 0}</strong> skipped (duplicate phone + campaign in
+                  CSV)
+                </li>
+                <li>
                   <strong>{result.totalLeads}</strong> data rows in CSV
                 </li>
                 {result.validPhoneLeads != null && result.validPhoneLeads !== result.totalLeads ? (

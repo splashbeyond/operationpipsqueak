@@ -305,7 +305,10 @@ async function updateUploadStatus(recordId, status, extraFields = {}) {
 /* ───────────────────────── customer data ───────────────────────── */
 
 /**
- * @param {{ name: string, phone: string, campaignType: string, companyId: string, batchId?: string, reward?: string }} data
+ * @param {{
+ *   name: string, phone: string, campaignType: string, companyId: string,
+ *   batchId?: string, reward?: string, status?: string
+ * }} data
  */
 async function createCustomerRecord(data) {
   const company = await getCompanyInfo(data.companyId);
@@ -319,7 +322,7 @@ async function createCustomerRecord(data) {
   const fields = {
     [CF.name]: data.name,
     [CF.phone]: data.phone,
-    [CF.status]: STATUS.customer.awaiting,
+    [CF.status]: data.status ?? STATUS.customer.awaiting,
     [CF.companyId]: OPTIONS.customerCompanyIdIsLink ? [company.recordId] : data.companyId,
   };
   if (!OPTIONS.customerOmitCampaignOnCreate) {

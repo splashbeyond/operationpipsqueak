@@ -3,7 +3,8 @@
  *   1. Create Uploads row (status = Pending).
  *   2. Optionally attach the CSV file (skipped by default).
  *   3. Parse CSV → leads.
- *   4. For each lead: skip if on Global DNC, otherwise create a Customer Data row (Awaiting).
+ *   4. For each lead: skip if on Global DNC; duplicate phone+campaign in the same CSV →
+ *      Customer Data row with Skipped Duplicate (first row in file is Awaiting). Otherwise Awaiting.
  *   5. Mark Uploads row Done.
  *
  * The outbound worker takes over from there.
@@ -14,7 +15,7 @@ const multer = require('multer');
 
 const airtable = require('../services/airtable');
 const { processCSV } = require('../services/csv');
-const { STATUS, FIELDS, OPTIONS } = require('../config');
+const { STATUS, FIELDS, OPTIONS, campaignKey } = require('../config');
 const { logger } = require('../log');
 
 const log = logger('upload');
@@ -24,6 +25,19 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 },
 });
+
+/** Last 10 digits — must match outbound / Airtable FIND dedupe. */
+function phoneLast10(phone) {
+  const d = String(phone || '').replace(/\D/g, '');
+  return d.length >= 10 ? d.slice(-10) : '';
+}
+
+/** One outbound lane per upload: phone + campaign key (same scope as Campaign Logs dedupe). */
+function handshakeLaneKey(phone, campaignType) {
+  const ten = phoneLast10(phone);
+  if (!ten) return null;
+  return `${ten}|${campaignKey(campaignType)}`;
+}
 
 function errorMessage(err) {
   if (!err) return 'Upload failed';
@@ -88,6 +102,9 @@ router.post(
 
       let imported = 0;
       let skippedDnc = 0;
+      let skippedDuplicate = 0;
+      /** First row in this CSV per phone+campaign becomes Awaiting; later dupes → Skipped Duplicate. */
+      const seenHandshakeLane = new Set();
 
       for (const lead of leads) {
         const campaignType = defaultCampaignType || lead.campaignType || 'review';
@@ -96,6 +113,10 @@ router.post(
           skippedDnc++;
           continue;
         }
+
+        const laneKey = handshakeLaneKey(lead.phone, campaignType);
+        const isCsvDuplicate = laneKey != null && seenHandshakeLane.has(laneKey);
+        if (laneKey && !isCsvDuplicate) seenHandshakeLane.add(laneKey);
 
         step = 'createCustomerRow';
         const rowReward =
@@ -107,8 +128,10 @@ router.post(
           companyId,
           batchId,
           reward: rowReward || undefined,
+          ...(isCsvDuplicate ? { status: STATUS.customer.skipped } : {}),
         });
-        imported++;
+        if (isCsvDuplicate) skippedDuplicate++;
+        else imported++;
       }
 
       step = 'markUploadDone';
@@ -122,6 +145,7 @@ router.post(
         uploadId: uploadRecordId,
         imported,
         skippedDnc,
+        skippedDuplicate,
         dataRowCount,
         validPhoneLeads: leads.length,
       });
@@ -130,6 +154,7 @@ router.post(
         uploadId: uploadRecordId,
         imported,
         skippedDnc,
+        skippedDuplicate,
         totalLeads: dataRowCount,
         validPhoneLeads: leads.length,
         attachmentError,
