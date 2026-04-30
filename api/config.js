@@ -3,7 +3,7 @@
  *
  * Required env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID.
  * Everything else has a sane default for the Piper "Universal CSV" base shape:
- *   Customer Data: Name, Phone Number, Campaign Type, Status (incl. Skipped for dedupe), Company ID (link), Reward,
+ *   Customer Data: Name, Phone Number, Campaign Type, Status (incl. Skipped Duplicate for dedupe), Company ID (link), Reward,
  *                  Latest Customer Reply, Latest System Reply (conversation preview for Interfaces)
  *   Campaign Logs: Company ID (link), Phone Number, Campaign Type, Status,
  *                  Latest Reply, Replied At, Handshake Sent At, Snapshot: Links,
@@ -113,7 +113,7 @@ const STATUS = {
     sent: str(process.env.AIRTABLE_CUSTOMER_STATUS_SENT, 'Sent'),
     failed: str(process.env.AIRTABLE_CUSTOMER_STATUS_FAILED, 'Failed'),
     /** Set when handshake skipped: Campaign Logs already has this company+phone+campaign lane. */
-    skipped: str(process.env.AIRTABLE_CUSTOMER_STATUS_SKIPPED, 'Skipped'),
+    skipped: str(process.env.AIRTABLE_CUSTOMER_STATUS_SKIPPED, 'Skipped Duplicate'),
   },
   upload: {
     initial: str(
