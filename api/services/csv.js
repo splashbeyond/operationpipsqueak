@@ -101,6 +101,87 @@ function fallbackHeaderMap(headers) {
 }
 
 /**
+ * Keep only header values that exist on this file (exact string match).
+ * @param {Record<string, string | null | undefined>} map
+ * @param {string[]} headers
+ */
+function coerceHeaderMap(map, headers) {
+  const set = new Set(headers.filter(Boolean));
+  /** @type {{ name: string | null, phone: string | null, campaign_type: string | null, reward: string | null }} */
+  const out = {
+    name: null,
+    phone: null,
+    campaign_type: null,
+    reward: null,
+  };
+  for (const key of ['name', 'phone', 'campaign_type', 'reward']) {
+    const v = map[key];
+    if (v != null && String(v).trim() !== '' && set.has(String(v))) {
+      out[key] = String(v);
+    }
+  }
+  return out;
+}
+
+/**
+ * Pick the column whose non-empty sample cells most often normalize to US E.164.
+ * @param {string[]} headers
+ * @param {Record<string, string>[]} rows
+ */
+function guessPhoneColumn(headers, rows) {
+  let best = null;
+  let bestScore = -1;
+  const limit = Math.min(rows.length, 20);
+  for (const h of headers) {
+    if (!h) continue;
+    let valid = 0;
+    let total = 0;
+    for (let i = 0; i < limit; i++) {
+      const v = rows[i]?.[h];
+      if (v == null || String(v).trim() === '') continue;
+      total++;
+      if (normalizePhoneUS(v)) valid++;
+    }
+    const score = total > 0 ? valid / total : 0;
+    if (score > bestScore) {
+      bestScore = score;
+      best = h;
+    }
+  }
+  return bestScore >= 0.4 ? best : null;
+}
+
+/**
+ * Common CRM / sheet headers for contact name.
+ * @param {string[]} headers
+ */
+function guessNameColumn(headers) {
+  const h = headers.filter(Boolean);
+  const ranked = [
+    /^(first\s*name|firstname|given\s*name|fname)$/i,
+    /^(full\s*name|name|contact\s*name)$/i,
+    /^contact$/i,
+    /\b(first|given)\b.*\bname\b/i,
+    /\bfull\b.*\bname\b/i,
+  ];
+  for (const re of ranked) {
+    const hit = h.find((col) => re.test(col.trim()));
+    if (hit) return hit;
+  }
+  return h[0] ?? null;
+}
+
+/**
+ * Use first whitespace-delimited token for SMS greeting ("Sarah Smith" → "Sarah").
+ * @param {string} raw
+ */
+function displayFirstName(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  return s.split(/\s+/)[0] || '';
+}
+
+/**
  * @param {string} phoneRaw
  * @returns {string | null} E.164 +1XXXXXXXXXX or null
  */
@@ -130,7 +211,8 @@ function extractLeads(rows, headerMap) {
   const leads = [];
 
   for (const row of rows) {
-    const name = nameCol ? String(row[nameCol] ?? '').trim() : '';
+    const rawName = nameCol ? String(row[nameCol] ?? '').trim() : '';
+    const first = displayFirstName(rawName);
     const phoneRaw = phoneCol ? String(row[phoneCol] ?? '').trim() : '';
     const campaignType = campaignCol
       ? String(row[campaignCol] ?? '').trim()
@@ -141,7 +223,7 @@ function extractLeads(rows, headerMap) {
     if (!phone) continue;
 
     leads.push({
-      name: name || 'Friend',
+      name: first || 'Friend',
       phone,
       campaignType: campaignType || 'review',
       reward,
@@ -157,9 +239,64 @@ function extractLeads(rows, headerMap) {
  */
 async function processCSV(fileBuffer) {
   const { headers, rows, rawText } = parseCSV(fileBuffer);
-  const headerMap = await mapHeaders(headers, rawText);
+  let headerMap = coerceHeaderMap(await mapHeaders(headers, rawText), headers);
+  if (!headerMap.phone) headerMap = { ...headerMap, phone: guessPhoneColumn(headers, rows) };
+  if (!headerMap.name) headerMap = { ...headerMap, name: guessNameColumn(headers) };
   const leads = extractLeads(rows, headerMap);
-  return { leads, dataRowCount: rows.length };
+  return { leads, dataRowCount: rows.length, headerMap };
+}
+
+/**
+ * Parse CSV and build preview + suggested mapping (OpenAI + heuristics).
+ * @param {Buffer} fileBuffer
+ * @param {{ name: string | null, phone: string | null, campaign_type: string | null, reward: string | null } | null} [overrideMap] If set, skip LLM and use this mapping (after coerce).
+ * @param {number} [sampleLimit]
+ */
+async function previewCSV(fileBuffer, overrideMap = null, sampleLimit = 15) {
+  const { headers, rows, rawText } = parseCSV(fileBuffer);
+  const lim = Math.min(Math.max(Number(sampleLimit) || 15, 5), 50);
+  const sampleRowSlice = rows.slice(0, lim);
+
+  let headerMap;
+  if (overrideMap) {
+    headerMap = coerceHeaderMap(overrideMap, headers);
+  } else {
+    headerMap = coerceHeaderMap(await mapHeaders(headers, rawText), headers);
+    if (!headerMap.phone) headerMap = { ...headerMap, phone: guessPhoneColumn(headers, rows) };
+    if (!headerMap.name) headerMap = { ...headerMap, name: guessNameColumn(headers) };
+  }
+
+  const previewLeads = extractLeads(sampleRowSlice, headerMap);
+  let nonEmptyPhoneAttempts = 0;
+  if (headerMap.phone) {
+    for (const row of sampleRowSlice) {
+      const raw = row[headerMap.phone];
+      if (raw != null && String(raw).trim() !== '') nonEmptyPhoneAttempts++;
+    }
+  }
+
+  return {
+    headers,
+    dataRowCount: rows.length,
+    suggestedMapping: headerMap,
+    previewLeads,
+    previewSample: {
+      rowsInSample: sampleRowSlice.length,
+      validPhonesInSample: previewLeads.length,
+      nonEmptyPhoneCellsInSample: nonEmptyPhoneAttempts,
+    },
+  };
+}
+
+/**
+ * @param {Buffer} fileBuffer
+ * @param {{ name: string | null, phone: string | null, campaign_type: string | null, reward: string | null }} headerMap Must use exact header strings from file.
+ */
+function processCSVWithMapping(fileBuffer, headerMap) {
+  const { headers, rows } = parseCSV(fileBuffer);
+  const map = coerceHeaderMap(headerMap, headers);
+  const leads = extractLeads(rows, map);
+  return { leads, dataRowCount: rows.length, headerMap: map };
 }
 
 module.exports = {
@@ -167,5 +304,8 @@ module.exports = {
   mapHeaders,
   extractLeads,
   processCSV,
+  processCSVWithMapping,
+  previewCSV,
+  coerceHeaderMap,
   normalizePhoneUS,
 };

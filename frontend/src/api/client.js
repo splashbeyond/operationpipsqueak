@@ -33,6 +33,21 @@ export async function uploadCsv(formData) {
   return data
 }
 
+/** Multipart: file, optional columnMapping (JSON string). */
+export async function previewCsvUpload(formData) {
+  const base = getApiBase()
+  const res = await fetch(`${base}/upload/preview`, {
+    method: 'POST',
+    body: formData,
+  })
+  const data = await parseJsonSafe(res)
+  if (!res.ok) {
+    const msg = data?.error || data?.message || `Preview failed (${res.status})`
+    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg))
+  }
+  return data
+}
+
 export async function fetchCampaignStats(companyId) {
   const base = getApiBase()
   const q = new URLSearchParams({ companyId })

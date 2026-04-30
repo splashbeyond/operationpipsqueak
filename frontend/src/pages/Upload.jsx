@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useCompany } from '../context/useCompany.js'
-import { fetchCampaignTypes, getApiBase, uploadCsv } from '../api/client.js'
+import { fetchCampaignTypes, getApiBase, previewCsvUpload, uploadCsv } from '../api/client.js'
+
+/** @param {{ phone: string, name: string, campaign_type: string, reward: string }} m */
+function columnMappingToJson(m) {
+  return JSON.stringify({
+    phone: m.phone || null,
+    name: m.name?.trim() ? m.name : null,
+    campaign_type: m.campaign_type?.trim() ? m.campaign_type : null,
+    reward: m.reward?.trim() ? m.reward : null,
+  })
+}
 
 /** Shown while loading or if API fails — values must stay in sync with backend `CANONICAL_CAMPAIGNS`. */
 const FALLBACK_CAMPAIGN_OPTIONS = [
@@ -23,6 +33,10 @@ export function Upload() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [result, setResult] = useState(null)
+  const [previewData, setPreviewData] = useState(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewError, setPreviewError] = useState('')
+  const [columnMapping, setColumnMapping] = useState(null)
   const [campaignMeta, setCampaignMeta] = useState(null)
   const [campaignMetaLoading, setCampaignMetaLoading] = useState(false)
   const [campaignMetaError, setCampaignMetaError] = useState('')
@@ -68,6 +82,9 @@ export function Upload() {
       setFile(f)
       setResult(null)
       setError('')
+      setPreviewData(null)
+      setPreviewError('')
+      setColumnMapping(null)
     }
   }, [])
 
@@ -77,6 +94,66 @@ export function Upload() {
       setFile(f)
       setResult(null)
       setError('')
+      setPreviewData(null)
+      setPreviewError('')
+      setColumnMapping(null)
+    }
+  }
+
+  useEffect(() => {
+    if (!file || !apiBase) {
+      setPreviewData(null)
+      setColumnMapping(null)
+      setPreviewError('')
+      setPreviewLoading(false)
+      return
+    }
+    let cancelled = false
+    setPreviewLoading(true)
+    setPreviewError('')
+    const fd = new FormData()
+    fd.append('file', file)
+    previewCsvUpload(fd)
+      .then((data) => {
+        if (cancelled) return
+        setPreviewData(data)
+        const sm = data.suggestedMapping || {}
+        setColumnMapping({
+          phone: sm.phone || '',
+          name: sm.name || '',
+          campaign_type: sm.campaign_type || '',
+          reward: sm.reward || '',
+        })
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setPreviewData(null)
+          setColumnMapping(null)
+          setPreviewError(e instanceof Error ? e.message : 'Preview failed')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setPreviewLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [file, apiBase])
+
+  const refreshPreviewWithMapping = async () => {
+    if (!file || !apiBase || !columnMapping?.phone) return
+    setPreviewLoading(true)
+    setPreviewError('')
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      fd.append('columnMapping', columnMappingToJson(columnMapping))
+      const data = await previewCsvUpload(fd)
+      setPreviewData(data)
+    } catch (e) {
+      setPreviewError(e instanceof Error ? e.message : 'Preview failed')
+    } finally {
+      setPreviewLoading(false)
     }
   }
 
@@ -96,6 +173,10 @@ export function Upload() {
       setError('Choose a CSV file.')
       return
     }
+    if (previewData && columnMapping && !columnMapping.phone) {
+      setError('Choose which CSV column is the phone number before importing.')
+      return
+    }
 
     const fd = new FormData()
     fd.append('file', file)
@@ -103,6 +184,9 @@ export function Upload() {
     if (batchName.trim()) fd.append('batchName', batchName.trim())
     if (reward.trim()) fd.append('reward', reward.trim())
     if (campaignType) fd.append('campaignType', campaignType)
+    if (previewData && columnMapping?.phone) {
+      fd.append('columnMapping', columnMappingToJson(columnMapping))
+    }
 
     setLoading(true)
     try {
@@ -154,6 +238,149 @@ export function Upload() {
             ) : null}
           </label>
         </div>
+
+        {previewLoading && file ? (
+          <p className="text-sm text-piper-dark/60">Analyzing CSV columns…</p>
+        ) : null}
+        {previewError ? (
+          <div className="rounded-[12px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+            Preview unavailable — import will use automatic column detection only. ({previewError})
+          </div>
+        ) : null}
+
+        {previewData?.headers?.length && columnMapping ? (
+          <div className="space-y-4 rounded-[12px] border border-piper-dark/10 bg-white/90 px-4 py-4 sm:px-5">
+            <div>
+              <h2 className="text-sm font-semibold text-piper-dark">Column mapping</h2>
+              <p className="mt-1 text-xs text-piper-dark/55">
+                We guessed columns from your headers (and OpenAI when configured). Adjust if needed,
+                then <strong>Update preview</strong> to check normalized phones and names.
+              </p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="flex flex-col gap-1">
+                <span className="text-xs font-medium text-piper-dark/80">
+                  Phone <span className="text-red-600">*</span>
+                </span>
+                <select
+                  value={columnMapping.phone}
+                  onChange={(e) =>
+                    setColumnMapping((m) => (m ? { ...m, phone: e.target.value } : m))
+                  }
+                  className="rounded-[12px] border border-piper-dark/15 bg-white px-3 py-2.5 text-sm outline-none ring-piper-accent/30 focus:ring-2"
+                  required
+                >
+                  <option value="">— Select column —</option>
+                  {previewData.headers.map((h) => (
+                    <option key={h} value={h}>
+                      {h}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs font-medium text-piper-dark/80">Name (first word used)</span>
+                <select
+                  value={columnMapping.name}
+                  onChange={(e) =>
+                    setColumnMapping((m) => (m ? { ...m, name: e.target.value } : m))
+                  }
+                  className="rounded-[12px] border border-piper-dark/15 bg-white px-3 py-2.5 text-sm outline-none ring-piper-accent/30 focus:ring-2"
+                >
+                  <option value="">— None —</option>
+                  {previewData.headers.map((h) => (
+                    <option key={h} value={h}>
+                      {h}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs font-medium text-piper-dark/80">Campaign (CSV column)</span>
+                <select
+                  value={columnMapping.campaign_type}
+                  onChange={(e) =>
+                    setColumnMapping((m) => (m ? { ...m, campaign_type: e.target.value } : m))
+                  }
+                  className="rounded-[12px] border border-piper-dark/15 bg-white px-3 py-2.5 text-sm outline-none ring-piper-accent/30 focus:ring-2"
+                >
+                  <option value="">— None (use form / default) —</option>
+                  {previewData.headers.map((h) => (
+                    <option key={h} value={h}>
+                      {h}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs font-medium text-piper-dark/80">Reward (CSV column)</span>
+                <select
+                  value={columnMapping.reward}
+                  onChange={(e) =>
+                    setColumnMapping((m) => (m ? { ...m, reward: e.target.value } : m))
+                  }
+                  className="rounded-[12px] border border-piper-dark/15 bg-white px-3 py-2.5 text-sm outline-none ring-piper-accent/30 focus:ring-2"
+                >
+                  <option value="">— None —</option>
+                  {previewData.headers.map((h) => (
+                    <option key={h} value={h}>
+                      {h}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => void refreshPreviewWithMapping()}
+                disabled={!columnMapping.phone || previewLoading}
+                className="rounded-full border border-piper-dark/20 bg-white px-4 py-2 text-sm font-medium text-piper-dark hover:bg-piper-surface disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Update preview
+              </button>
+              {previewData.previewSample ? (
+                <span className="text-xs text-piper-dark/55">
+                  Sample: {previewData.previewSample.validPhonesInSample} valid US phones /{' '}
+                  {previewData.previewSample.nonEmptyPhoneCellsInSample} filled cells (first{' '}
+                  {previewData.previewSample.rowsInSample} rows)
+                </span>
+              ) : null}
+            </div>
+            {previewData.previewLeads?.length ? (
+              <div className="overflow-x-auto rounded-[12px] border border-piper-dark/10">
+                <table className="min-w-full text-left text-xs text-piper-dark">
+                  <thead className="bg-piper-surface/80 text-piper-dark/70">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">Name</th>
+                      <th className="px-3 py-2 font-medium">Phone (E.164)</th>
+                      <th className="px-3 py-2 font-medium">Campaign</th>
+                      <th className="px-3 py-2 font-medium">Reward</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {previewData.previewLeads.map((row, i) => (
+                      <tr key={i} className="border-t border-piper-dark/10">
+                        <td className="px-3 py-2">{row.name}</td>
+                        <td className="px-3 py-2 font-mono">{row.phone}</td>
+                        <td className="px-3 py-2">{row.campaignType}</td>
+                        <td className="px-3 py-2">{row.reward || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="text-xs text-amber-900">
+                No valid US phone numbers in the preview rows for this mapping. Fix the Phone column
+                or format (+1 ten digits).
+              </p>
+            )}
+            <p className="text-xs text-piper-dark/50">
+              Full file: <strong>{previewData.dataRowCount}</strong> data rows.
+            </p>
+          </div>
+        ) : null}
 
         <div className="space-y-4 rounded-[12px] border border-piper-dark/10 bg-white/80 px-4 py-4 sm:px-5">
           <div className="flex flex-col gap-1">

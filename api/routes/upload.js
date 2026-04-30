@@ -14,7 +14,13 @@ const express = require('express');
 const multer = require('multer');
 
 const airtable = require('../services/airtable');
-const { processCSV } = require('../services/csv');
+const {
+  processCSV,
+  parseCSV,
+  extractLeads,
+  coerceHeaderMap,
+  previewCSV,
+} = require('../services/csv');
 const { STATUS, FIELDS, OPTIONS, campaignKey } = require('../config');
 const { logger } = require('../log');
 
@@ -51,6 +57,44 @@ function errorMessage(err) {
     return 'Upload failed';
   }
 }
+
+/**
+ * POST /upload/preview — multipart file (+ optional columnMapping JSON to refresh preview).
+ * Returns headers, suggested column mapping (AI + heuristics), and first rows normalized.
+ */
+router.post(
+  '/preview',
+  (req, res, next) => {
+    upload.single('file')(req, res, (err) => {
+      if (err) return res.status(400).json({ error: err.message || 'File upload error' });
+      next();
+    });
+  },
+  async (req, res) => {
+    if (!req.file?.buffer) {
+      return res.status(400).json({ error: 'CSV file is required (field name: file)' });
+    }
+    try {
+      let override = null;
+      const rawMap = req.body.columnMapping;
+      if (rawMap != null && String(rawMap).trim() !== '') {
+        const { headers } = parseCSV(req.file.buffer);
+        let parsed;
+        try {
+          parsed = JSON.parse(String(rawMap));
+        } catch {
+          return res.status(400).json({ error: 'columnMapping must be valid JSON' });
+        }
+        override = coerceHeaderMap(parsed, headers);
+      }
+      const out = await previewCSV(req.file.buffer, override, 15);
+      return res.json({ ok: true, ...out });
+    } catch (err) {
+      log.error('preview failed', { err: errorMessage(err) });
+      return res.status(500).json({ error: errorMessage(err) });
+    }
+  }
+);
 
 router.post(
   '/',
@@ -97,7 +141,30 @@ router.post(
       }
 
       step = 'parseCsv';
-      const { leads, dataRowCount } = await processCSV(req.file.buffer);
+      const mappingRaw = req.body.columnMapping;
+      let leads;
+      let dataRowCount;
+      if (mappingRaw != null && String(mappingRaw).trim() !== '') {
+        let userMap;
+        try {
+          userMap = JSON.parse(String(mappingRaw));
+        } catch {
+          return res.status(400).json({ error: 'columnMapping must be valid JSON' });
+        }
+        const parsed = parseCSV(req.file.buffer);
+        const headerMap = coerceHeaderMap(userMap, parsed.headers);
+        if (!headerMap.phone) {
+          return res.status(400).json({
+            error: 'Column mapping must include a Phone column from your CSV headers.',
+          });
+        }
+        leads = extractLeads(parsed.rows, headerMap);
+        dataRowCount = parsed.rows.length;
+      } else {
+        const parsed = await processCSV(req.file.buffer);
+        leads = parsed.leads;
+        dataRowCount = parsed.dataRowCount;
+      }
       const batchId = batchName || uploadRecordId;
 
       let imported = 0;

@@ -4,7 +4,8 @@
  * Endpoints:
  *   GET  /            — service banner
  *   GET  /health      — liveness probe (returns 200)
- *   POST /upload      — CSV upload (multipart "file" + companyId, optional batchName/campaignType/reward)
+ *   POST /upload       — CSV import (multipart + companyId; optional columnMapping JSON)
+ *   POST /upload/preview — analyze CSV: suggested columns + sample normalized rows
  *   POST /webhook     — Blooio inbound (message.received)
  *   GET  /campaigns/* — dashboard read APIs
  *   POST /process     — manually run an outbound batch (needs PROCESSOR_SECRET)
@@ -38,6 +39,7 @@ app.get('/', (_req, res) =>
     endpoints: {
       health: 'GET /health',
       upload: 'POST /upload',
+      uploadPreview: 'POST /upload/preview',
       webhook: 'POST /webhook',
       campaigns: 'GET /campaigns?companyId=…',
       campaignTypes: 'GET /campaigns/campaign-types?companyId=…',
