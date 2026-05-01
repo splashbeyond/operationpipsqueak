@@ -3,6 +3,7 @@ import { Layout } from './components/Layout.jsx'
 import { Upload } from './pages/Upload.jsx'
 import { Campaigns } from './pages/Campaigns.jsx'
 import { Batches } from './pages/Batches.jsx'
+import { Schedule } from './pages/Schedule.jsx'
 
 export default function App() {
   return (
@@ -12,6 +13,7 @@ export default function App() {
         <Route path="upload" element={<Upload />} />
         <Route path="campaigns" element={<Campaigns />} />
         <Route path="batches" element={<Batches />} />
+        <Route path="schedule" element={<Schedule />} />
       </Route>
     </Routes>
   )

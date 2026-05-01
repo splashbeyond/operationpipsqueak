@@ -20,6 +20,7 @@ const uploadRouter = require('./routes/upload');
 const webhookRouter = require('./routes/webhook');
 const campaignsRouter = require('./routes/campaigns');
 const processRouter = require('./routes/process');
+const schedulerRouter = require('./routes/scheduler');
 const { startProcessor, stopProcessor } = require('./jobs/processor');
 const { SERVER, assertCoreEnv } = require('./config');
 const { logger } = require('./log');
@@ -43,6 +44,8 @@ app.get('/', (_req, res) =>
       webhook: 'POST /webhook',
       campaigns: 'GET /campaigns?companyId=…',
       campaignTypes: 'GET /campaigns/campaign-types?companyId=…',
+      schedulerForecast:
+        'GET /scheduler/forecast?companyId=…&campaignType=…&start=YYYY-MM-DD&end=YYYY-MM-DD',
       process: 'POST /process',
     },
   })
@@ -53,6 +56,7 @@ app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOStrin
 app.use('/upload', uploadRouter);
 app.use('/webhook', webhookRouter);
 app.use('/campaigns', campaignsRouter);
+app.use('/scheduler', schedulerRouter);
 app.use('/process', processRouter);
 
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }));

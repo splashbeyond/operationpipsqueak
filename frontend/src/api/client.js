@@ -94,3 +94,12 @@ export async function fetchCustomers(companyId, { status, batchId } = {}) {
   if (!res.ok) throw new Error(data?.error || `Customers failed (${res.status})`)
   return data
 }
+
+export async function fetchSchedulerForecast(companyId, campaignType, startISO, endISO) {
+  const base = getApiBase()
+  const q = new URLSearchParams({ companyId, campaignType, start: startISO, end: endISO })
+  const res = await fetch(`${base}/scheduler/forecast?${q}`)
+  const data = await parseJsonSafe(res)
+  if (!res.ok) throw new Error(data?.error || `Forecast failed (${res.status})`)
+  return data
+}

@@ -8,6 +8,7 @@
  */
 
 const airtable = require('./airtable');
+const scheduler = require('./scheduler');
 const {
   getHandshakeTemplate,
   hasRewardOffer,
@@ -18,6 +19,9 @@ const { STATUS, OPTIONS, SERVER, FIELDS } = require('../config');
 const { logger } = require('../log');
 
 const log = logger('outbound');
+
+/** Default timezone if a Company Info row hasn't picked one yet. */
+const FALLBACK_TZ = process.env.PIPER_DEFAULT_TIMEZONE || 'America/Phoenix';
 
 function buildPlaceholderCtx(customer, company) {
   return {
@@ -61,6 +65,28 @@ async function processOneAwaitingCustomer() {
     if (!company) throw new Error(`Company not found: ${customer.companyId}`);
     if (!company.blooioApiKey) {
       throw new Error(`Missing Blooio API key for company ${customer.companyId}`);
+    }
+
+    // Scheduler gate: window + holiday + per-day target + spacing.
+    // Side-effect free — if blocked, customer stays Awaiting and the worker
+    // tries again on the next tick.
+    const decision = await scheduler.canSendNow({
+      tz: company.timezone || FALLBACK_TZ,
+      sendOnHolidays: company.sendOnHolidays,
+      companyId: customer.companyId,
+      campaignType: customer.campaignType,
+    });
+    if (!decision.ok) {
+      log.info('scheduler gated', {
+        reason: decision.reason,
+        companyId: customer.companyId,
+        campaign: customer.campaignType,
+        target: decision.target,
+        sentToday: decision.sentToday,
+        remainingQueue: decision.remainingQueue,
+        retryAfterMin: decision.retryAfterMin,
+      });
+      return false;
     }
 
     const earlierDup = await airtable.hasEarlierActiveCustomerHandshakeDuplicate(

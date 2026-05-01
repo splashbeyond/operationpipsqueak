@@ -33,6 +33,9 @@ export function Layout() {
               <NavLink to="/batches" className={navClass}>
                 Batches
               </NavLink>
+              <NavLink to="/schedule" className={navClass}>
+                Schedule
+              </NavLink>
             </nav>
           </div>
           <div className="flex w-full flex-col gap-1 sm:w-72">

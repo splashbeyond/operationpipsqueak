@@ -7,6 +7,7 @@
 
 const Airtable = require('airtable');
 const axios = require('axios');
+const { DateTime } = require('luxon');
 
 const {
   TABLES,
@@ -194,6 +195,12 @@ function companyInfoFromRecord(r) {
     reviewLink: r.get('Review Link') || '',
     membershipLink: r.get('Membership Link') || r.get('Upsell Link') || '',
     ownerMobile: r.get('Owner Mobile') || '',
+
+    // Scheduling. `Time Zone` is a single-select with IANA values
+    // (America/Phoenix, America/Chicago, etc.). `Send On Holidays` is a
+    // checkbox; absent/false means we skip US major holidays.
+    timezone: String(r.get('Time Zone') || '').trim(),
+    sendOnHolidays: !!r.get('Send On Holidays'),
   };
 }
 
@@ -903,6 +910,202 @@ async function addToDNC(phone, companyId, reason = 'STOP') {
   }
 }
 
+/* ───────────────────────── scheduler queries ───────────────────────── */
+
+/**
+ * Build the company-id filterByFormula clause for Customer Data, handling both
+ * text and linked-record schema layouts.
+ */
+function buildCustomerCompanyClause(companyIdText, companyRecordId) {
+  const CF = FIELDS.customer;
+  if (OPTIONS.customerCompanyIdIsLink) {
+    if (!companyRecordId) return null;
+    return `FIND('${escFormula(companyRecordId)}', ARRAYJOIN({${CF.companyId}}))`;
+  }
+  return `{${CF.companyId}} = '${escFormula(String(companyIdText))}'`;
+}
+
+function buildLogCompanyClause(companyIdText, companyRecordId) {
+  const F = FIELDS.log;
+  if (OPTIONS.logCompanyIdIsLink) {
+    if (!companyRecordId) return null;
+    return `FIND('${escFormula(companyRecordId)}', ARRAYJOIN({${F.companyId}}))`;
+  }
+  return `{${F.companyId}} = '${escFormula(String(companyIdText))}'`;
+}
+
+/** UTC ISO bounds for "today" in a business's local timezone. */
+function utcBoundsForLocalDay(now, tz) {
+  const localStart = DateTime.fromJSDate(now).setZone(tz).startOf('day');
+  return {
+    startUtc: localStart.toUTC().toISO(),
+    endUtc: localStart.plus({ days: 1 }).toUTC().toISO(),
+  };
+}
+
+/**
+ * Count Customer Data rows in Awaiting status for a (company, campaign).
+ * Used by the scheduler as the "remaining queue" cap.
+ */
+async function countAwaitingByCompanyAndCampaign(companyIdText, rawCampaignType) {
+  const CF = FIELDS.customer;
+  const company = await getCompanyInfo(companyIdText);
+  if (!company) return 0;
+
+  const companyClause = buildCustomerCompanyClause(companyIdText, company.recordId);
+  if (!companyClause) return 0;
+
+  const campaignLabel = customerCampaignLabel(campaignKey(rawCampaignType));
+  const formula = `AND(${companyClause}, {${CF.status}} = '${escFormula(STATUS.customer.awaiting)}', {${CF.campaign}} = '${escFormula(campaignLabel)}')`;
+
+  try {
+    let total = 0;
+    await getBase()(TABLES.customerData)
+      .select({ filterByFormula: formula, pageSize: 100 })
+      .eachPage((records, fetchNextPage) => {
+        total += records.length;
+        fetchNextPage();
+      });
+    return total;
+  } catch (err) {
+    log.warn('countAwaitingByCompanyAndCampaign failed (assuming 0)', {
+      err: err instanceof Error ? err.message : String(err),
+      companyIdText,
+      rawCampaignType,
+    });
+    return 0;
+  }
+}
+
+/**
+ * Count Campaign Logs rows whose Handshake Sent At falls within the business's
+ * local "today" for a given (company, campaign). Used to enforce the daily target.
+ */
+async function countCampaignLogsToday(companyIdText, rawCampaignType, now, tz) {
+  const F = FIELDS.log;
+  const company = await getCompanyInfo(companyIdText);
+  if (!company) return 0;
+
+  const companyClause = buildLogCompanyClause(companyIdText, company.recordId);
+  if (!companyClause) return 0;
+
+  const { startUtc, endUtc } = utcBoundsForLocalDay(now, tz);
+  const campaignLabel = customerCampaignLabel(campaignKey(rawCampaignType));
+  const formula = `AND(${companyClause}, {${F.campaign}} = '${escFormula(campaignLabel)}', IS_AFTER({${F.handshakeSentAt}}, '${startUtc}'), IS_BEFORE({${F.handshakeSentAt}}, '${endUtc}'))`;
+
+  try {
+    let total = 0;
+    await getBase()(TABLES.campaignLogs)
+      .select({ filterByFormula: formula, pageSize: 100 })
+      .eachPage((records, fetchNextPage) => {
+        total += records.length;
+        fetchNextPage();
+      });
+    return total;
+  } catch (err) {
+    log.warn('countCampaignLogsToday failed (assuming 0)', {
+      err: err instanceof Error ? err.message : String(err),
+      companyIdText,
+      rawCampaignType,
+    });
+    return 0;
+  }
+}
+
+/**
+ * All Awaiting Customer Data rows for a (company, campaign), sorted by
+ * createdTime ascending (matches the order the worker drains them in).
+ * Used by the scheduler forecast to assign customers to projected slots.
+ *
+ * @param {string} companyIdText
+ * @param {string} rawCampaignType
+ * @param {number} [maxRows] hard ceiling to protect against runaway pulls
+ * @returns {Promise<Array<{ id:string, name:string, phone:string, createdTime:string }>>}
+ */
+async function getAllAwaitingCustomersForCompanyAndCampaign(
+  companyIdText,
+  rawCampaignType,
+  maxRows = 5000
+) {
+  const CF = FIELDS.customer;
+  const company = await getCompanyInfo(companyIdText);
+  if (!company) return [];
+
+  const companyClause = buildCustomerCompanyClause(companyIdText, company.recordId);
+  if (!companyClause) return [];
+
+  const campaignLabel = customerCampaignLabel(campaignKey(rawCampaignType));
+  const formula = `AND(${companyClause}, {${CF.status}} = '${escFormula(STATUS.customer.awaiting)}', {${CF.campaign}} = '${escFormula(campaignLabel)}')`;
+
+  /** @type {Array<{ id:string, name:string, phone:string, createdTime:string, _ms:number }>} */
+  const out = [];
+  try {
+    await getBase()(TABLES.customerData)
+      .select({ filterByFormula: formula, pageSize: 100 })
+      .eachPage((records, fetchNextPage) => {
+        for (const r of records) {
+          if (out.length >= maxRows) break;
+          out.push({
+            id: r.id,
+            name: String(r.get(CF.name) ?? ''),
+            phone: String(r.get(CF.phone) ?? ''),
+            createdTime: r._rawJson?.createdTime || '',
+            _ms: r._rawJson?.createdTime ? Date.parse(r._rawJson.createdTime) || 0 : 0,
+          });
+        }
+        if (out.length < maxRows) fetchNextPage();
+      });
+  } catch (err) {
+    log.warn('getAllAwaitingCustomersForCompanyAndCampaign failed', {
+      err: err instanceof Error ? err.message : String(err),
+      companyIdText,
+      rawCampaignType,
+    });
+    return [];
+  }
+  out.sort((a, b) => a._ms - b._ms);
+  return out.map(({ _ms, ...rest }) => rest);
+}
+
+/**
+ * Most recent Handshake Sent At for a (company, campaign) within today
+ * (business-local). Returns a JS Date or null. Used to enforce spacing between sends.
+ */
+async function getLatestCampaignLogTime(companyIdText, rawCampaignType, now, tz) {
+  const F = FIELDS.log;
+  const company = await getCompanyInfo(companyIdText);
+  if (!company) return null;
+
+  const companyClause = buildLogCompanyClause(companyIdText, company.recordId);
+  if (!companyClause) return null;
+
+  const { startUtc, endUtc } = utcBoundsForLocalDay(now, tz);
+  const campaignLabel = customerCampaignLabel(campaignKey(rawCampaignType));
+  const formula = `AND(${companyClause}, {${F.campaign}} = '${escFormula(campaignLabel)}', IS_AFTER({${F.handshakeSentAt}}, '${startUtc}'), IS_BEFORE({${F.handshakeSentAt}}, '${endUtc}'))`;
+
+  try {
+    const records = await getBase()(TABLES.campaignLogs)
+      .select({
+        filterByFormula: formula,
+        sort: [{ field: F.handshakeSentAt, direction: 'desc' }],
+        maxRecords: 1,
+      })
+      .firstPage();
+    if (!records.length) return null;
+    const raw = records[0].get(F.handshakeSentAt);
+    if (!raw) return null;
+    const ms = Date.parse(String(raw));
+    return Number.isFinite(ms) ? new Date(ms) : null;
+  } catch (err) {
+    log.warn('getLatestCampaignLogTime failed (treating as none)', {
+      err: err instanceof Error ? err.message : String(err),
+      companyIdText,
+      rawCampaignType,
+    });
+    return null;
+  }
+}
+
 /* ───────────────────────── message history (optional) ───────────────────────── */
 
 async function createMessageHistoryEntry(entry) {
@@ -997,6 +1200,11 @@ module.exports = {
   hasEarlierActiveCustomerHandshakeDuplicate,
   hasBlockingCampaignLane,
   markCustomerHandshakeDedupeSkip,
+  // scheduler queries
+  countAwaitingByCompanyAndCampaign,
+  countCampaignLogsToday,
+  getLatestCampaignLogTime,
+  getAllAwaitingCustomersForCompanyAndCampaign,
   // misc
   createMessageHistoryEntry,
 };
