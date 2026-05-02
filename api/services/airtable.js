@@ -910,6 +910,150 @@ async function addToDNC(phone, companyId, reason = 'STOP') {
   }
 }
 
+/* ───────────────────────── company templates ───────────────────────── */
+
+/**
+ * Catalog of editable Company Info template fields.
+ *
+ * Each entry is one row in the dashboard Templates section. Some campaigns
+ * share Airtable fields (no-show / cancellation / reactivation all use the
+ * "Payload: Booking" pair) — we model that with an `aliases` list of field
+ * names tried in order on read and write.
+ */
+const COMPANY_TEMPLATE_CATALOG = [
+  // Handshake (per-campaign)
+  { kind: 'handshake', campaign: 'review', variant: 'reward', label: 'Review · Handshake (Reward)', aliases: ['Handshake: Review (Reward)'] },
+  { kind: 'handshake', campaign: 'review', variant: 'noReward', label: 'Review · Handshake (No Reward)', aliases: ['Handshake: Review (No Reward)'] },
+  { kind: 'handshake', campaign: 'no_show', variant: 'reward', label: 'No-Show · Handshake (Reward)', aliases: ['Handshake: No-Show (Reward)', 'Handshake: No Show (Reward)'] },
+  { kind: 'handshake', campaign: 'no_show', variant: 'noReward', label: 'No-Show · Handshake (No Reward)', aliases: ['Handshake: No-Show (No Reward)', 'Handshake: No Show (No Reward)'] },
+  { kind: 'handshake', campaign: 'cancellation', variant: 'reward', label: 'Cancellation · Handshake (Reward)', aliases: ['Handshake: Cancellation (Reward)'] },
+  { kind: 'handshake', campaign: 'cancellation', variant: 'noReward', label: 'Cancellation · Handshake (No Reward)', aliases: ['Handshake: Cancellation (No Reward)'] },
+  { kind: 'handshake', campaign: 'reactivation', variant: 'reward', label: 'Reactivation · Handshake (Reward)', aliases: ['Handshake: Reactivation (Reward)'] },
+  { kind: 'handshake', campaign: 'reactivation', variant: 'noReward', label: 'Reactivation · Handshake (No Reward)', aliases: ['Handshake: Reactivation (No Reward)'] },
+  { kind: 'handshake', campaign: 'referral', variant: 'reward', label: 'Referral · Handshake (Reward)', aliases: ['Handshake: Referral (Reward)'] },
+  { kind: 'handshake', campaign: 'referral', variant: 'noReward', label: 'Referral · Handshake (No Reward)', aliases: ['Handshake: Referral (No Reward)'] },
+  { kind: 'handshake', campaign: 'upsell', variant: 'reward', label: 'Upsell · Handshake (Reward)', aliases: ['Handshake: Upsell (Reward)'] },
+  { kind: 'handshake', campaign: 'upsell', variant: 'noReward', label: 'Upsell · Handshake (No Reward)', aliases: ['Handshake: Upsell (No Reward)'] },
+
+  // Payload (per "logical" payload set; Booking is shared)
+  { kind: 'payload', campaign: 'review', variant: 'reward', label: 'Review · Payload (Reward)', aliases: ['Payload: Review (Reward)'] },
+  { kind: 'payload', campaign: 'review', variant: 'noReward', label: 'Review · Payload (No Reward)', aliases: ['Payload: Review (No Reward)'] },
+  {
+    kind: 'payload',
+    campaign: 'booking',
+    variant: 'reward',
+    label: 'Booking · Payload (Reward) — shared by No-Show, Cancellation, Reactivation',
+    aliases: ['Payload: Booking (Reward)', 'Payload: No-Show (Reward)', 'Payload: No Show (Reward)'],
+  },
+  {
+    kind: 'payload',
+    campaign: 'booking',
+    variant: 'noReward',
+    label: 'Booking · Payload (No Reward) — shared by No-Show, Cancellation, Reactivation',
+    aliases: ['Payload: Booking (No Reward)', 'Payload: No-Show (No Reward)', 'Payload: No Show (No Reward)'],
+  },
+  { kind: 'payload', campaign: 'referral', variant: 'reward', label: 'Referral · Payload (Reward)', aliases: ['Payload: Referral (Reward)'] },
+  { kind: 'payload', campaign: 'referral', variant: 'noReward', label: 'Referral · Payload (No Reward)', aliases: ['Payload: Referral (No Reward)'] },
+  { kind: 'payload', campaign: 'upsell', variant: 'reward', label: 'Upsell · Payload (Reward)', aliases: ['Payload: Upsell (Reward)'] },
+  { kind: 'payload', campaign: 'upsell', variant: 'noReward', label: 'Upsell · Payload (No Reward)', aliases: ['Payload: Upsell (No Reward)'] },
+];
+
+function templateKey(t) {
+  return `${t.kind}:${t.campaign}:${t.variant}`;
+}
+
+function findTemplateMeta(kind, campaign, variant) {
+  return COMPANY_TEMPLATE_CATALOG.find(
+    (t) => t.kind === kind && t.campaign === campaign && t.variant === variant
+  );
+}
+
+/**
+ * Read all template values for a company. Returns one entry per catalog row,
+ * with the value taken from the first present alias.
+ */
+async function getCompanyTemplates(companyIdText) {
+  const id = String(companyIdText || '').trim();
+  if (!id) return null;
+  const b = getBase();
+
+  let record;
+  if (id.startsWith('rec')) {
+    try {
+      record = await b(TABLES.companyInfo).find(id);
+    } catch {
+      record = null;
+    }
+  }
+  if (!record) {
+    const records = await b(TABLES.companyInfo)
+      .select({ filterByFormula: `{Company ID} = '${escFormula(id)}'`, maxRecords: 1 })
+      .firstPage();
+    record = records[0];
+  }
+  if (!record) return null;
+
+  const items = COMPANY_TEMPLATE_CATALOG.map((t) => {
+    const value = fieldFirst(record, ...t.aliases);
+    return {
+      key: templateKey(t),
+      kind: t.kind,
+      campaign: t.campaign,
+      variant: t.variant,
+      label: t.label,
+      aliases: t.aliases,
+      value,
+    };
+  });
+
+  return {
+    companyId: record.get('Company ID') || id,
+    recordId: record.id,
+    businessName: record.get('Business Name') || '',
+    items,
+  };
+}
+
+/**
+ * Update a single template field on a company. Tries each alias in order and
+ * writes to the first one Airtable accepts. If none of the aliases exist, the
+ * field is created — no, actually we surface UNKNOWN_FIELD_NAME so the operator
+ * knows the column needs to be created in Airtable first.
+ */
+async function updateCompanyTemplate(companyIdText, kind, campaign, variant, value) {
+  const meta = findTemplateMeta(kind, campaign, variant);
+  if (!meta) throw new Error(`Unknown template: ${kind}/${campaign}/${variant}`);
+
+  const company = await getCompanyInfo(companyIdText);
+  if (!company) throw new Error(`Company not found: ${companyIdText}`);
+
+  const recordId = company.recordId;
+  if (!recordId) throw new Error(`Company missing Airtable record id: ${companyIdText}`);
+
+  const cleaned = value == null ? '' : String(value);
+
+  let lastErr = null;
+  for (const fieldName of meta.aliases) {
+    try {
+      await getBase()(TABLES.companyInfo).update([
+        { id: recordId, fields: { [fieldName]: cleaned } },
+      ]);
+      return { written: fieldName };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/UNKNOWN_FIELD_NAME|Unknown field name/i.test(msg)) {
+        lastErr = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error(
+    `None of the Airtable fields exist on Company Info: ${meta.aliases.join(', ')}. ` +
+      'Add the column in Airtable to enable this template.'
+  );
+}
+
 /* ───────────────────────── scheduler queries ───────────────────────── */
 
 /**
@@ -1200,6 +1344,10 @@ module.exports = {
   hasEarlierActiveCustomerHandshakeDuplicate,
   hasBlockingCampaignLane,
   markCustomerHandshakeDedupeSkip,
+  // company templates
+  getCompanyTemplates,
+  updateCompanyTemplate,
+  COMPANY_TEMPLATE_CATALOG,
   // scheduler queries
   countAwaitingByCompanyAndCampaign,
   countCampaignLogsToday,

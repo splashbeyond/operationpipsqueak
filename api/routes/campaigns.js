@@ -193,6 +193,48 @@ router.get('/batches', async (req, res) => {
   }
 });
 
+router.get('/templates', async (req, res) => {
+  const companyId = requireCompanyId(req, res);
+  if (!companyId) return;
+  try {
+    const data = await airtable.getCompanyTemplates(companyId);
+    if (!data) return res.status(404).json({ error: `Company not found: ${companyId}` });
+    return res.json({
+      ...data,
+      placeholders: ['[Name]', '[Business Name]', '[Review Link]', '[Booking Link]', '[Membership Link]', '[Reward]'],
+    });
+  } catch (err) {
+    log.error('templates get failed', { err: err instanceof Error ? err.message : String(err) });
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Error' });
+  }
+});
+
+router.patch('/templates', async (req, res) => {
+  const companyId = requireCompanyId(req, res);
+  if (!companyId) return;
+  const { kind, campaign, variant, value } = req.body || {};
+  if (!kind || !campaign || !variant) {
+    return res.status(400).json({ error: 'kind, campaign, and variant are required' });
+  }
+  if (typeof value !== 'string') {
+    return res.status(400).json({ error: 'value must be a string' });
+  }
+  try {
+    const result = await airtable.updateCompanyTemplate(
+      companyId,
+      String(kind),
+      String(campaign),
+      String(variant),
+      value
+    );
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Error';
+    log.error('templates patch failed', { err: msg, kind, campaign, variant });
+    return res.status(400).json({ error: msg });
+  }
+});
+
 router.get('/stats', async (req, res) => {
   const companyId = requireCompanyId(req, res);
   if (!companyId) return;
